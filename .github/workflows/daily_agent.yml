@@ -1,5 +1,6 @@
 name: Daily travel agent
 
+
 on:
   schedule:
     - cron: '45 6 * * 1-5'    # 07:45 CET (UTC+1) on weekdays
