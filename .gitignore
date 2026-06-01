@@ -1,0 +1,20 @@
+# Secrets — never commit
+.env
+*credentials*.json
+token.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Local outputs / artifacts
+outputs/*.png
+*.log
+.DS_Store
+
+
+CLAUDE.md

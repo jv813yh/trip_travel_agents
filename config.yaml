@@ -1,0 +1,34 @@
+trip:
+  origin_city: "Košice"
+  origin_airport: "KSC"
+  destination_city: "Warsaw"
+  destination_airport: "WAW"          # also check WMI (Modlin)
+  dates:
+    outbound: "2026-08-20"            
+    return: "2026-08-23"              
+  group_size: 5
+
+accommodation:
+  target_address: "św. Franciszka Salezego 2 (ul), 00-392 Warszawa"   # where friends live
+  target_coordinates:                 # used as distance reference; null = geocode target_address
+    lat: 52.2297
+    lng: 21.0122
+  max_price_per_night_eur: 55
+  min_rating: 8.5                     # Booking.com scale 0–10
+  max_distance_km: 3.0
+  nights: 4
+  sources:
+    - booking_com
+    - airbnb
+
+transport:
+  budget_flight_eur: 60               # per person one-way
+  budget_bus_eur: 25                  # per person one-way
+  max_layovers: 1
+
+alerts:
+  price_drop_threshold_pct: 10        # email alert if price drops >10% vs yesterday
+  budget_breach_alert: true           # email alert if price goes below max_price_per_night_eur
+
+sheets:
+  spreadsheet_name: "Warszawa Trip Tracker"   # name of the Google Sheet to write to
