@@ -62,7 +62,8 @@ def _normalise(raw: dict[str, Any], source: str, config: dict[str, Any]) -> dict
 
 def _run_actor(client: Any, actor_id: str, run_input: dict[str, Any]) -> list[dict[str, Any]]:
     run = client.actor(actor_id).call(run_input=run_input)
-    items = client.dataset(run["defaultDatasetId"]).list_items().items
+    dataset_id = run["defaultDatasetId"] if isinstance(run, dict) else run.default_dataset_id
+    items = client.dataset(dataset_id).list_items().items
     return items
 
 
