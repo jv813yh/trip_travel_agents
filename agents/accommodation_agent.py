@@ -72,10 +72,9 @@ def _fetch_booking(client: Any, config: dict[str, Any]) -> list[dict[str, Any]]:
     The actor's raw field names vary; adjust the mapping here if the actor's
     output schema changes.
     """
-    acc = config["accommodation"]
     trip = config["trip"]
     run_input = {
-        "search": acc["target_address"],
+        "search": trip["destination_city"],
         "checkIn": trip["dates"]["outbound"],
         "checkOut": trip["dates"]["return"],
         "currency": "EUR",
@@ -105,10 +104,9 @@ def _fetch_booking(client: Any, config: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _fetch_airbnb(client: Any, config: dict[str, Any]) -> list[dict[str, Any]]:
-    acc = config["accommodation"]
     trip = config["trip"]
     run_input = {
-        "locationQuery": acc["target_address"],
+        "locationQuery": trip["destination_city"],
         "checkIn": trip["dates"]["outbound"],
         "checkOut": trip["dates"]["return"],
         "currency": "EUR",

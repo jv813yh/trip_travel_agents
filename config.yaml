@@ -9,11 +9,11 @@ trip:
   group_size: 5
 
 accommodation:
-  target_address: "św. Franciszka Salezego 2 (ul), 00-392 Warszawa"   # where friends live
+  target_address: "św. Franciszka Salezego 2, 00-392 Warszawa, Poland"  # where friends live
   target_coordinates:                 # used as distance reference; null = geocode target_address
-    lat: 52.2297
-    lng: 21.0122
-  max_price_per_night_eur: 55
+    lat: 52.2401
+    lng: 21.0255
+  max_price_per_night_eur: 70
   min_rating: 8.5                     # Booking.com scale 0–10
   max_distance_km: 3.0
   nights: 4
