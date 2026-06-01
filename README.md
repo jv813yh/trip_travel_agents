@@ -1,4 +1,4 @@
-# Poland Trip Travel Agent
+# Trip Travel Agent
 
 Automated daily agent that tracks accommodation, flights, and bus options for a group trip to
 Warsaw, Poland (Aug 2026). Runs every weekday morning via GitHub Actions, stores price history in
