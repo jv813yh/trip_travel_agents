@@ -34,8 +34,8 @@ AIRBNB_ACTOR = "tri_angle/airbnb-scraper"
 
 def _normalise(raw: dict[str, Any], source: str, config: dict[str, Any]) -> dict[str, Any]:
     """Map a raw actor item onto the common accommodation schema + score it."""
-    lat = raw.get("lat")
-    lng = raw.get("lng")
+    lat = _coerce_float(raw.get("lat"))
+    lng = _coerce_float(raw.get("lng"))
     dist = distance_km(lat, lng, config) if lat is not None and lng is not None else None
     price = raw.get("price_eur")
     rating = raw.get("rating")
@@ -80,7 +80,7 @@ def _fetch_booking(client: Any, config: dict[str, Any]) -> list[dict[str, Any]]:
         "checkOut": trip["dates"]["return"],
         "currency": "EUR",
         "adults": trip["group_size"],
-        "maxItems": 25,
+        "maxItems": 10,
     }
     items = _run_actor(client, BOOKING_ACTOR, run_input)
     out = []
@@ -112,7 +112,7 @@ def _fetch_airbnb(client: Any, config: dict[str, Any]) -> list[dict[str, Any]]:
         "checkOut": trip["dates"]["return"],
         "currency": "EUR",
         "adults": trip["group_size"],
-        "maxItems": 25,
+        "maxItems": 10,
     }
     items = _run_actor(client, AIRBNB_ACTOR, run_input)
     out = []
@@ -134,6 +134,15 @@ def _fetch_airbnb(client: Any, config: dict[str, Any]) -> list[dict[str, Any]]:
             )
         )
     return out
+
+
+def _coerce_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _coerce_price(value: Any) -> float | None:

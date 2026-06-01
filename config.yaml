@@ -19,7 +19,7 @@ accommodation:
   nights: 4
   sources:
     - booking_com
-    - airbnb
+    # - airbnb        # disabled to save Apify compute (free tier ~$5/mo)
 
 transport:
   budget_flight_eur: 60               # per person one-way
