@@ -13,7 +13,7 @@ import json
 import os
 from typing import Any
 
-MODEL = "claude-opus-4-8"
+MODEL = "claude-sonnet-4-6"
 
 SYSTEM_PROMPT = """\
 You are a travel assistant helping plan a group trip to Warsaw, Poland in August 2026.
@@ -87,7 +87,10 @@ def analyse(
     """Return the structured analysis JSON (Claude if available, else fallback)."""
     if os.environ.get("ANTHROPIC_API_KEY"):
         try:
-            return _analyse_with_claude(run_date, accommodation, transport, alerts, config)
+            result = _analyse_with_claude(run_date, accommodation, transport, alerts, config)
+            # Alerts come from price_tracker (structured); don't let Claude rewrite them as prose.
+            result.setdefault("accommodation", {})["alerts"] = alerts
+            return result
         except Exception as exc:  # noqa: BLE001 — never let analysis break the run
             print(f"[analyser] Claude call failed ({exc}); using deterministic fallback.")
     return _analyse_deterministic(run_date, accommodation, transport, alerts, config)
