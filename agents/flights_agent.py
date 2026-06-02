@@ -57,8 +57,45 @@ def _trip_id(origin: str, dest: str, date: str, carrier: str) -> str:
     return f"{origin}-{dest}-{date.replace('-', '')}-{code}"
 
 
-def _deep_link(carrier: str, origin: str, dest: str, date: str, adults: int, fallback: str | None) -> str:
-    """Build a carrier-specific deep link with date / pax pre-filled."""
+def _skyscanner_search_link(origin: str, dest: str, date: str, adults: int) -> str:
+    """Build a Skyscanner search URL with route/date/passengers pre-filled."""
+    return (
+        f"https://www.skyscanner.com/transport/flights/{origin.lower()}/{dest.lower()}/"
+        f"{date.replace('-', '')[2:]}/?adults={adults}"
+    )
+
+
+def _is_verified_direct_market(carrier: str, origin: str, dest: str) -> bool:
+    """Return true only for direct airline markets we have verified.
+
+    Aggregators may return low-cost self-transfer itineraries where the first
+    marketing carrier is Wizz/Ryanair, but those airlines reject direct
+    KSC-WAW/WMI checkout URLs. For unverified markets, link to Skyscanner
+    search instead of manufacturing an airline checkout URL.
+    """
+    c = (carrier or "").lower()
+    if origin == "KSC" and dest == "WAW" and ("lot" in c or c == "lo"):
+        return True
+    return False
+
+
+def _deep_link(
+    carrier: str,
+    origin: str,
+    dest: str,
+    date: str,
+    adults: int,
+    stops: int,
+    fallback: str | None,
+) -> str:
+    """Build the safest booking/search link with date / pax pre-filled."""
+    if fallback:
+        return fallback
+
+    # Carrier checkout links are only safe for verified non-stop markets.
+    if stops != 0 or not _is_verified_direct_market(carrier, origin, dest):
+        return _skyscanner_search_link(origin, dest, date, adults)
+
     c = (carrier or "").lower()
     if "ryanair" in c:
         q = _u.urlencode({
@@ -72,11 +109,7 @@ def _deep_link(carrier: str, origin: str, dest: str, date: str, adults: int, fal
             f"https://wizzair.com/en-gb/booking/select-flight/"
             f"{origin}/{dest}/{date}/null/{adults}/0/0/null"
         )
-    # Generic Skyscanner deeplink fallback (the API returns one).
-    return fallback or (
-        f"https://www.skyscanner.com/transport/flights/{origin.lower()}/{dest.lower()}/"
-        f"{date.replace('-', '')[2:]}/?adults={adults}"
-    )
+    return _skyscanner_search_link(origin, dest, date, adults)
 
 
 def _normalise(raw: dict[str, Any], origin: str, dest: str, date: str, offset: int, adults: int) -> dict[str, Any]:
@@ -90,7 +123,9 @@ def _normalise(raw: dict[str, Any], origin: str, dest: str, date: str, offset: i
         "departure": raw.get("departure"),
         "arrival": raw.get("arrival"),
         "stops": raw.get("stops", 0),
-        "booking_link": _deep_link(carrier, origin, dest, date, adults, raw.get("booking_link")),
+        "booking_link": _deep_link(
+            carrier, origin, dest, date, adults, raw.get("stops", 0), raw.get("booking_link")
+        ),
         "date": date,
         "date_offset_days": offset,
     }
@@ -169,7 +204,8 @@ def _query_skyscanner(origin: str, dest: str, date: str, max_stops: int) -> list
             "departure": dep[11:16] if len(dep) >= 16 else dep,
             "arrival": arr[11:16] if len(arr) >= 16 else arr,
             "stops": stops,
-            # Sky-Scrapper does not return a deep link; _deep_link() builds one.
+            # Sky-Scrapper does not return an itinerary deeplink; _deep_link()
+            # builds either a verified airline link or a safer Skyscanner search.
             "booking_link": None,
         })
     return out
@@ -203,8 +239,8 @@ def _mock_data(config: dict[str, Any]) -> list[dict[str, Any]]:
     date = trip["dates"]["outbound"]
     adults = trip["group_size"]
     samples = [
-        {"carrier": "Wizz Air", "price_eur": 54, "duration_min": 100,
-         "departure": "12:10", "arrival": "13:50", "stops": 0, "dest": "WMI"},
+        {"carrier": "LOT", "price_eur": 119, "duration_min": 55,
+         "departure": "17:40", "arrival": "18:35", "stops": 0, "dest": "WAW"},
     ]
     return [_normalise(s, origin, s["dest"], date, 0, adults) for s in samples]
 

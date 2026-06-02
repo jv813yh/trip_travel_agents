@@ -15,23 +15,29 @@ from typing import Any
 
 MODEL = "claude-sonnet-4-6"
 
-SYSTEM_PROMPT = """\
-You are a travel assistant helping plan a group trip to Warsaw, Poland in August 2026.
+
+def _system_prompt(config: dict[str, Any]) -> str:
+    """Build the analyser prompt from config.yaml so trip facts stay current."""
+    trip = config["trip"]
+    acc = config["accommodation"]
+    transport = config["transport"]
+    return f"""\
+You are a travel assistant helping plan a group trip to {trip['destination_city']}, Poland.
 
 GROUP CONTEXT:
-- 4 people travelling from Košice, Slovakia
-- Friends live near ul. Marszałkowska, Warsaw — accommodation must be as close as possible to this address
-- Travel dates: 7–14 August 2026 (7 nights)
-- Budget: max €80/night total for accommodation, max €60/person for flights (one-way), max €25/person for FlixBus (one-way)
+- {trip['group_size']} people travelling from {trip['origin_city']} ({trip['origin_airport']})
+- Target accommodation area: {acc['target_address']}
+- Travel dates: {trip['dates']['outbound']} to {trip['dates']['return']} ({acc.get('nights')} nights)
+- Budget: max EUR {acc['max_price_per_night_eur']}/night total for accommodation, max EUR {transport['budget_flight_eur']}/person for flights (one-way), max EUR {transport['budget_bus_eur']}/person for FlixBus (one-way)
 
 YOUR TASK:
 Given today's scraped data, select the TOP 2 accommodation options and TOP 1 transport option.
-Accommodation is pre-scored (composite_score, 0–100, higher = better). Prefer higher scores but
-apply judgement. For transport, compare cheapest flight vs FlixBus considering total door-to-door
-travel time for a group of 4, not just ticket price, and recommend the better option with clear reasoning.
+Accommodation is pre-scored (composite_score, 0-100, higher = better). Prefer higher scores but
+apply judgement. For transport, compare available flights vs FlixBus considering total door-to-door
+travel time for the group, not just ticket price, and recommend the better option with clear reasoning.
 
-Output ONLY valid JSON matching the schema provided in the user message. Do not fabricate data —
-if a field is unavailable set it to null. Be concise.
+Output ONLY valid JSON matching the schema provided in the user message. Do not fabricate data.
+If a field is unavailable set it to null. Be concise.
 """
 
 OUTPUT_SCHEMA_HINT = {
@@ -134,7 +140,7 @@ def _analyse_with_claude(
     resp = client.messages.create(
         model=MODEL,
         max_tokens=2000,
-        system=SYSTEM_PROMPT,
+        system=_system_prompt(config),
         messages=[{"role": "user", "content": user_msg}],
     )
     text = "".join(block.text for block in resp.content if block.type == "text")

@@ -139,6 +139,11 @@ class SheetsWriter:
         if self.enabled:
             self._connect()
 
+    @property
+    def spreadsheet_url(self) -> str | None:
+        """Return the Google Sheet URL when connected."""
+        return getattr(self._spreadsheet, "url", None) if self._spreadsheet else None
+
     def _connect(self) -> None:
         import gspread
         from google.oauth2.service_account import Credentials

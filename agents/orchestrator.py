@@ -97,6 +97,9 @@ def run(dry_run: bool = False) -> dict:
     analysis_dict["_critic"] = final_verdict   # surfaced in the email if invalid
     analysis_dict["_transport_warnings"] = transport_warnings  # API failures, shown in email
     analysis_dict["_accommodation_warnings"] = accommodation_warnings  # fallback notices, shown in email
+    analysis_dict["_spreadsheet_url"] = (
+        sheets.spreadsheet_url or config.get("sheets", {}).get("spreadsheet_url")
+    )
 
     # 5. Persist to Sheets (no-op without credentials)
     if not dry_run:

@@ -110,6 +110,25 @@ def _date_badge(offset: int | None) -> str:
     )
 
 
+def _transport_link_label(option: dict[str, Any]) -> str:
+    """Return a clear label for transport booking/search links."""
+    link = option.get("booking_link") or ""
+    if option.get("type") == "flight" and "skyscanner." in link:
+        return "Search on Skyscanner →"
+    if option.get("type") == "flixbus":
+        return "Book on FlixBus →"
+    return "Book →"
+
+
+def _stops_text(option: dict[str, Any]) -> str:
+    stops = option.get("stops")
+    if option.get("type") != "flight" or stops is None:
+        return ""
+    if stops == 0:
+        return " · direct"
+    return f" · {stops} stop{'s' if stops != 1 else ''}, verify itinerary"
+
+
 def build_html(analysis: dict[str, Any], history_df: pd.DataFrame, config: dict[str, Any]) -> str:
     acc = analysis["accommodation"]
     transport = analysis["transport"]
@@ -118,6 +137,7 @@ def build_html(analysis: dict[str, Any], history_df: pd.DataFrame, config: dict[
     trip = config["trip"]
     transport_warnings = analysis.get("_transport_warnings") or []
     accommodation_warnings = analysis.get("_accommodation_warnings") or []
+    spreadsheet_url = analysis.get("_spreadsheet_url") or config.get("sheets", {}).get("spreadsheet_url")
 
     rec_type = transport.get("recommendation")
     rec = next((o for o in transport["options"] if o["type"] == rec_type), None) if rec_type else None
@@ -131,7 +151,11 @@ def build_html(analysis: dict[str, Any], history_df: pd.DataFrame, config: dict[
         f"<b>{trip['origin_city']} → {trip['destination_city']}</b> · "
         f"{trip['dates']['outbound']} → {trip['dates']['return']} · "
         f"{trip['group_size']} people"
-        "</div>"
+        + (
+            f"<br><a href='{spreadsheet_url}' style='color:#0b57d0'>Open tracking sheet →</a>"
+            if spreadsheet_url else ""
+        )
+        + "</div>"
     )
 
     # 0. Critic warning banner (only when invalid)
@@ -152,8 +176,8 @@ def build_html(analysis: dict[str, Any], history_df: pd.DataFrame, config: dict[
             f"<p><b>{rec['carrier']}</b> ({rec['type']}){_date_badge(rec.get('date_offset_days'))} — "
             f"€{rec['price_eur_per_person']}/person · {rec.get('duration_min')} min · "
             f"{rec.get('departure')}→{rec.get('arrival')} · "
-            f"group total €{rec.get('total_group_cost_eur')}<br>"
-            f"<a href='{rec.get('booking_link')}'>Book →</a></p>"
+            f"group total €{rec.get('total_group_cost_eur')}{_stops_text(rec)}<br>"
+            f"<a href='{rec.get('booking_link')}'>{_transport_link_label(rec)}</a></p>"
         )
     elif transport_warnings:
         parts.append(
@@ -184,8 +208,8 @@ def build_html(analysis: dict[str, Any], history_df: pd.DataFrame, config: dict[
                 f"{_date_badge(o.get('date_offset_days'))} — "
                 f"€{o.get('price_eur_per_person')}/person · "
                 f"{o.get('duration_min')} min · "
-                f"{o.get('departure')}→{o.get('arrival')} · "
-                f"<a href='{o.get('booking_link')}'>Book →</a></li>"
+                f"{o.get('departure')}→{o.get('arrival')}{_stops_text(o)} · "
+                f"<a href='{o.get('booking_link')}'>{_transport_link_label(o)}</a></li>"
             )
         parts.append("</ul></details>")
 
