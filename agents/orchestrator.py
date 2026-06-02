@@ -20,11 +20,13 @@ import datetime as dt
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agents.accommodation_agent import fetch_accommodation  # noqa: E402
-from agents.analyser import analyse  # noqa: E402
+from agents.analyser import OUTPUT_SCHEMA_HINT, analyse  # noqa: E402
+from agents.critic import critique  # noqa: E402
 from agents.flights_agent import fetch_flights  # noqa: E402
 from agents.flixbus_agent import fetch_flixbus  # noqa: E402
 from agents.price_tracker import check_price_alerts  # noqa: E402
@@ -32,6 +34,8 @@ from models import AgentOutput  # noqa: E402
 from outputs import gmail_sender  # noqa: E402
 from outputs.sheets_writer import SheetsWriter  # noqa: E402
 from utils.config_loader import load_config  # noqa: E402
+
+MAX_CRITIC_RETRIES = 2
 
 
 def run(dry_run: bool = False) -> dict:
@@ -60,10 +64,28 @@ def run(dry_run: bool = False) -> dict:
     alerts = check_price_alerts(accommodation, history, config)
     print(f"  {len(alerts)} alert(s) triggered")
 
-    # 4. AI analyser -> structured output, validated against the Pydantic schema
+    # 4. AI analyser -> structured output -> critic -> retry loop -> Pydantic validation
     raw_analysis = analyse(run_date, accommodation, transport, alerts, config)
+    final_verdict: dict[str, Any] = {"valid": True, "issues": [], "retry_hint": None}
+    for attempt in range(MAX_CRITIC_RETRIES + 1):
+        verdict = critique(accommodation, transport, raw_analysis, OUTPUT_SCHEMA_HINT)
+        final_verdict = verdict
+        if verdict.get("valid"):
+            print(f"  critic OK (attempt {attempt + 1})")
+            break
+        print(f"  critic FAIL attempt {attempt + 1}: {verdict.get('issues')}")
+        if attempt == MAX_CRITIC_RETRIES:
+            print("  critic still failing — proceeding with warning banner")
+            break
+        # Retry analyser with critic feedback baked into the input
+        raw_analysis = analyse(
+            run_date, accommodation, transport, alerts, config,
+            critic_feedback=verdict,
+        )
+
     analysis = AgentOutput.model_validate(raw_analysis)
     analysis_dict = analysis.model_dump()
+    analysis_dict["_critic"] = final_verdict   # surfaced in the email if invalid
 
     # 5. Persist to Sheets (no-op without credentials)
     if not dry_run:

@@ -71,6 +71,8 @@ OUTPUT_SCHEMA_HINT = {
                 "stops": 0,
                 "booking_link": "str",
                 "total_group_cost_eur": 0,
+                "date": "YYYY-MM-DD",
+                "date_offset_days": 0,
             }
         ],
     },
@@ -83,11 +85,14 @@ def analyse(
     transport: list[dict[str, Any]],
     alerts: list[dict[str, Any]],
     config: dict[str, Any],
+    critic_feedback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return the structured analysis JSON (Claude if available, else fallback)."""
     if os.environ.get("ANTHROPIC_API_KEY"):
         try:
-            result = _analyse_with_claude(run_date, accommodation, transport, alerts, config)
+            result = _analyse_with_claude(
+                run_date, accommodation, transport, alerts, config, critic_feedback
+            )
             # Alerts come from price_tracker (structured); don't let Claude rewrite them as prose.
             result.setdefault("accommodation", {})["alerts"] = alerts
             return result
@@ -102,10 +107,20 @@ def _analyse_with_claude(
     transport: list[dict[str, Any]],
     alerts: list[dict[str, Any]],
     config: dict[str, Any],
+    critic_feedback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from anthropic import Anthropic
 
     client = Anthropic()
+    feedback_block = ""
+    if critic_feedback and not critic_feedback.get("valid"):
+        feedback_block = (
+            "\n\nA prior attempt was REJECTED by the critic. Issues to fix:\n- "
+            + "\n- ".join(critic_feedback.get("issues") or [])
+            + f"\nHint: {critic_feedback.get('retry_hint') or ''}\n"
+            + "Only use hotel_ids, trip_ids and carriers that appear in the data below. "
+            "Never invent options. If transport data is empty, set recommendation to null."
+        )
     user_msg = (
         "Today's scored data follows. Select top 2 accommodation and best transport.\n\n"
         f"OUTPUT SCHEMA (return JSON exactly like this shape):\n{json.dumps(OUTPUT_SCHEMA_HINT)}\n\n"
@@ -114,6 +129,7 @@ def _analyse_with_claude(
         f"ACCOMMODATION:\n{json.dumps(accommodation, ensure_ascii=False)}\n\n"
         f"TRANSPORT:\n{json.dumps(transport, ensure_ascii=False)}\n\n"
         f"ALERTS:\n{json.dumps(alerts, ensure_ascii=False)}"
+        f"{feedback_block}"
     )
     resp = client.messages.create(
         model=MODEL,
@@ -173,6 +189,7 @@ def _analyse_deterministic(
                 **{k: t.get(k) for k in (
                     "trip_id", "type", "carrier", "price_eur_per_person",
                     "duration_min", "departure", "arrival", "stops", "booking_link",
+                    "date", "date_offset_days",
                 )},
                 "total_group_cost_eur": round(pp * group, 2) if pp is not None else None,
             }

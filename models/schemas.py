@@ -79,6 +79,8 @@ class TransportOption(BaseModel):
     stops: int = Field(default=0, ge=0)
     booking_link: Optional[str] = None
     total_group_cost_eur: Optional[float] = Field(default=None, ge=0)
+    date: Optional[str] = None                   # ISO date this option actually covers
+    date_offset_days: Optional[int] = 0          # 0 = configured date, ±1 = alternative
 
 
 class TransportBlock(BaseModel):

@@ -60,6 +60,45 @@ def _trend_chart_b64(history_df: pd.DataFrame, top_picks: list[dict[str, Any]]) 
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
+def _score_breakdown(price: float, rating: float, distance_km: float, config: dict[str, Any]) -> str:
+    """Return a one-line explanation of the composite score components."""
+    acc_cfg = config["accommodation"]
+    budget = acc_cfg["max_price_per_night_eur"]
+    max_dist = acc_cfg["max_distance_km"]
+    min_price = budget * 0.5
+
+    def label(value: float, ceiling: float, ranges: list[tuple[float, str]]) -> str:
+        pct = max(0.0, min(1.0, value / ceiling)) * 100
+        for threshold, name in ranges:
+            if pct >= threshold:
+                return name
+        return ranges[-1][1]
+
+    price_pts = max(0, 40 * (1 - (price - min_price) / (budget - min_price))) if price else 0
+    rating_pts = (rating / 10) * 35 if rating else 0
+    dist_pts = max(0, 25 * (1 - (distance_km or 0) / max_dist))
+
+    price_label = label(price_pts, 40, [(75, "great price"), (50, "good price"), (25, "ok price"), (0, "over budget")])
+    rating_label = label(rating_pts, 35, [(75, "excellent"), (60, "very good"), (40, "good"), (0, "average")])
+    dist_label = label(dist_pts, 25, [(75, "very close"), (50, "close"), (25, "walkable"), (0, "far")])
+
+    return (
+        f"€{price:g}/night → {price_label} (+{price_pts:.0f}/40) · "
+        f"rating {rating:g} → {rating_label} (+{rating_pts:.0f}/35) · "
+        f"{distance_km:.2f} km → {dist_label} (+{dist_pts:.0f}/25)"
+    )
+
+
+def _date_badge(offset: int | None) -> str:
+    if offset is None or offset == 0:
+        return ""
+    sign = "+" if offset > 0 else ""
+    return (
+        f" <span style='background:#fff3cd;color:#856404;padding:2px 6px;"
+        f"border-radius:4px;font-size:12px'>{sign}{offset} day alt</span>"
+    )
+
+
 def build_html(analysis: dict[str, Any], history_df: pd.DataFrame, config: dict[str, Any]) -> str:
     acc = analysis["accommodation"]
     transport = analysis["transport"]
@@ -67,32 +106,60 @@ def build_html(analysis: dict[str, Any], history_df: pd.DataFrame, config: dict[
     picks = acc["top_picks"]
 
     rec_type = transport.get("recommendation")
-    rec = next((o for o in transport["options"] if o["type"] == rec_type), None)
+    rec = next((o for o in transport["options"] if o["type"] == rec_type), None) if rec_type else None
 
     parts: list[str] = ["<div style='font-family:Arial,sans-serif;max-width:640px'>"]
+
+    # 0. Critic warning banner (only when invalid)
+    critic = analysis.get("_critic") or {}
+    if not critic.get("valid", True) and critic.get("issues"):
+        parts.append(
+            "<div style='background:#f8d7da;color:#721c24;padding:10px 14px;"
+            "border-radius:6px;margin-bottom:12px'>"
+            "<b>⚠️ Critic flagged this run:</b><ul style='margin:6px 0 0 18px'>"
+            + "".join(f"<li>{i}</li>" for i in critic["issues"])
+            + "</ul></div>"
+        )
 
     # 1. Transport
     parts.append("<h2>🚆 Transport recommendation</h2>")
     if rec:
         parts.append(
-            f"<p><b>{rec['carrier']}</b> ({rec['type']}) — "
+            f"<p><b>{rec['carrier']}</b> ({rec['type']}){_date_badge(rec.get('date_offset_days'))} — "
             f"€{rec['price_eur_per_person']}/person · {rec.get('duration_min')} min · "
             f"{rec.get('departure')}→{rec.get('arrival')} · "
             f"group total €{rec.get('total_group_cost_eur')}<br>"
             f"<a href='{rec.get('booking_link')}'>Book →</a></p>"
         )
+    else:
+        parts.append(
+            "<p style='color:#a00'><b>No transport options available</b> for the configured date "
+            "(or ±1 day). Consider checking manually or adjusting your travel window.</p>"
+        )
     parts.append(f"<p style='color:#555'>{transport.get('reasoning','')}</p>")
 
     # 2. Accommodation
     parts.append(f"<h2>🏠 Top picks near {target}</h2>")
+    parts.append(
+        "<p style='color:#777;font-size:12px;margin-top:-8px'>"
+        "Match score is out of 100: price (40 pts) + rating (35 pts) + "
+        "distance to your friends (25 pts). Higher is better."
+        "</p>"
+    )
     for p in picks:
         alert_badge = " 🔔" if p.get("alert_triggered") else ""
         vs_y = p.get("vs_yesterday_pct")
         vs_y_str = f" · {vs_y:+.1f}% vs yesterday" if vs_y is not None else ""
+        breakdown = _score_breakdown(
+            p.get("price_eur_per_night") or 0,
+            p.get("rating") or 0,
+            p.get("distance_km") or 0,
+            config,
+        )
         parts.append(
             f"<p><b>#{p['rank']} {p['name']}</b>{alert_badge}<br>"
-            f"€{p['price_eur_per_night']}/night · rating {p['rating']} · "
-            f"{p['distance_km']} km · score {p['composite_score']}{vs_y_str}<br>"
+            f"<b>Match: {p['composite_score']:.0f}/100</b>{vs_y_str}<br>"
+            f"<span style='color:#555;font-size:13px'>{breakdown}</span><br>"
             f"<a href='{p['booking_link']}'>Book →</a></p>"
         )
 

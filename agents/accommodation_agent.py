@@ -24,9 +24,41 @@ from typing import Any
 # Allow `python agents/accommodation_agent.py` to import the utils/ package.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import urllib.parse as _u  # noqa: E402
+
 from utils.config_loader import load_config  # noqa: E402
 from utils.distance import distance_km  # noqa: E402
 from utils.scorer import composite_score  # noqa: E402
+
+
+def _booking_deep_link(url: str | None, config: dict[str, Any]) -> str | None:
+    """Append checkin/checkout/group params to a Booking.com hotel URL."""
+    if not url or "booking.com" not in url:
+        return url
+    trip = config["trip"]
+    extra = {
+        "checkin": trip["dates"]["outbound"],
+        "checkout": trip["dates"]["return"],
+        "group_adults": trip["group_size"],
+        "no_rooms": 1,
+        "group_children": 0,
+    }
+    sep = "&" if "?" in url else "?"
+    return f"{url}{sep}{_u.urlencode(extra)}"
+
+
+def _airbnb_deep_link(url: str | None, config: dict[str, Any]) -> str | None:
+    """Append checkin/checkout/guests params to an Airbnb listing URL."""
+    if not url or "airbnb." not in url:
+        return url
+    trip = config["trip"]
+    extra = {
+        "check_in": trip["dates"]["outbound"],
+        "check_out": trip["dates"]["return"],
+        "adults": trip["group_size"],
+    }
+    sep = "&" if "?" in url else "?"
+    return f"{url}{sep}{_u.urlencode(extra)}"
 
 BOOKING_ACTOR = "voyager/booking-scraper"
 AIRBNB_ACTOR = "tri_angle/airbnb-scraper"
@@ -95,7 +127,7 @@ def _fetch_booking(client: Any, config: dict[str, Any]) -> list[dict[str, Any]]:
                     "lat": (it.get("location") or {}).get("lat") or it.get("lat"),
                     "lng": (it.get("location") or {}).get("lng") or it.get("lng"),
                     "availability": True,
-                    "booking_link": it.get("url"),
+                    "booking_link": _booking_deep_link(it.get("url"), config),
                 },
                 "booking_com",
                 config,
@@ -127,7 +159,7 @@ def _fetch_airbnb(client: Any, config: dict[str, Any]) -> list[dict[str, Any]]:
                     "lat": it.get("lat") or (it.get("coordinates") or {}).get("latitude"),
                     "lng": it.get("lng") or (it.get("coordinates") or {}).get("longitude"),
                     "availability": True,
-                    "booking_link": it.get("url"),
+                    "booking_link": _airbnb_deep_link(it.get("url"), config),
                 },
                 "airbnb",
                 config,
