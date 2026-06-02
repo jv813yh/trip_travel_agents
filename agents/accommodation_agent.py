@@ -133,7 +133,7 @@ def _fetch_booking(client: Any, config: dict[str, Any]) -> list[dict[str, Any]]:
                 {
                     "hotel_id": f"bk_{it.get('hotelId') or it.get('id')}",
                     "name": it.get("name"),
-                    "price_eur": _coerce_price(it.get("price")),
+                    "price_eur": _to_per_night(_coerce_price(it.get("price")), config),
                     "rating": it.get("rating"),
                     "lat": (it.get("location") or {}).get("lat") or it.get("lat"),
                     "lng": (it.get("location") or {}).get("lng") or it.get("lng"),
@@ -165,7 +165,9 @@ def _fetch_airbnb(client: Any, config: dict[str, Any]) -> list[dict[str, Any]]:
                 {
                     "hotel_id": f"ab_{it.get('id')}",
                     "name": it.get("name") or it.get("title"),
-                    "price_eur": _coerce_price(it.get("price") or it.get("pricing")),
+                    "price_eur": _to_per_night(
+                        _coerce_price(it.get("price") or it.get("pricing")), config
+                    ),
                     "rating": it.get("rating") or it.get("stars"),
                     "lat": it.get("lat") or (it.get("coordinates") or {}).get("latitude"),
                     "lng": it.get("lng") or (it.get("coordinates") or {}).get("longitude"),
@@ -189,19 +191,42 @@ def _coerce_float(value: Any) -> float | None:
 
 
 def _coerce_price(value: Any) -> float | None:
-    """Best-effort extraction of a numeric per-night EUR price."""
+    """Best-effort extraction of a numeric EUR price (raw, undecided units)."""
     if value is None:
         return None
     if isinstance(value, (int, float)):
         return float(value)
     if isinstance(value, dict):
-        for key in ("amount", "value", "total", "perNight"):
+        # Per-night keys win — they are unambiguous.
+        for key in ("perNight", "pricePerNight", "price_per_night", "nightly"):
+            if key in value:
+                return _coerce_price(value[key])
+        for key in ("amount", "value", "total", "grossPrice"):
             if key in value:
                 return _coerce_price(value[key])
         return None
     # strings like "€72" or "72.00 EUR"
     digits = "".join(c for c in str(value) if c.isdigit() or c == ".")
     return float(digits) if digits else None
+
+
+def _to_per_night(raw_price: float | None, config: dict[str, Any]) -> float | None:
+    """Convert a raw actor price to per-night EUR.
+
+    Booking/Airbnb actors sometimes return a stay-total in the same field they
+    elsewhere use for nightly rates. Heuristic: if the value is implausibly
+    large for a nightly rate (>2× the configured per-night budget), assume it
+    is a stay-total for `accommodation.nights` nights and divide. This makes
+    the conversion explicit (the critic flagged silent reinterpretation).
+    """
+    if raw_price is None:
+        return None
+    acc = config["accommodation"]
+    budget = acc["max_price_per_night_eur"]
+    nights = max(1, int(acc.get("nights", 1)))
+    if raw_price > budget * 2 and nights > 1:
+        return round(raw_price / nights, 2)
+    return float(raw_price)
 
 
 def _mock_data(config: dict[str, Any]) -> list[dict[str, Any]]:
