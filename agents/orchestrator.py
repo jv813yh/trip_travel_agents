@@ -40,6 +40,9 @@ from utils.config_loader import load_config  # noqa: E402
 
 MAX_CRITIC_RETRIES = 2
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
 
 def run(dry_run: bool = False) -> dict:
     # Load local .env if present (no-op in CI, where secrets come from env).

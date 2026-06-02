@@ -25,6 +25,10 @@ jobs:
         env:
           APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
           RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
+          RAPIDAPI_SKY_KEY: ${{ secrets.RAPIDAPI_SKY_KEY }}
+          RAPIDAPI_SKY_HOST: ${{ secrets.RAPIDAPI_SKY_HOST }}
+          RAPIDAPI_SKY_FLIGHTS_PATH: ${{ secrets.RAPIDAPI_SKY_FLIGHTS_PATH }}
+          RAPIDAPI_SKY_HOTELS_PATH: ${{ secrets.RAPIDAPI_SKY_HOTELS_PATH }}
           GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
           GOOGLE_SHEETS_CREDENTIALS: ${{ secrets.GOOGLE_SHEETS_CREDENTIALS }}
           GMAIL_CREDENTIALS: ${{ secrets.GMAIL_CREDENTIALS }}

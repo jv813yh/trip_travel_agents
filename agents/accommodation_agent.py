@@ -88,8 +88,41 @@ AIRBNB_ACTOR = "trakk/airbnb-scraper"
 
 # Sky-Scrapper hotels — resolved once via /hotels/searchDestinationOrHotel.
 # Refresh if the city changes.
-SKYSCANNER_HOST = "sky-scrapper.p.rapidapi.com"
+DEFAULT_SKYSCANNER_HOST = "sky-scrapper.p.rapidapi.com"
+DEFAULT_SKYSCANNER_HOTELS_PATH = "/api/v1/hotels/searchHotels"
 SKYSCANNER_WARSAW_ENTITY_ID = "27547454"
+
+
+def _rapidapi_sky_key() -> str | None:
+    """Return the Sky Scrapper-specific RapidAPI key, falling back to shared key."""
+    return os.environ.get("RAPIDAPI_SKY_KEY") or os.environ.get("RAPIDAPI_KEY")
+
+
+def _skyscanner_host() -> str:
+    """Return the RapidAPI host for the subscribed Sky Scrapper API product."""
+    return os.environ.get("RAPIDAPI_SKY_HOST", DEFAULT_SKYSCANNER_HOST)
+
+
+def _skyscanner_hotels_url() -> str:
+    path = os.environ.get("RAPIDAPI_SKY_HOTELS_PATH", DEFAULT_SKYSCANNER_HOTELS_PATH)
+    if not path.startswith("/"):
+        path = f"/{path}"
+    return f"https://{_skyscanner_host()}{path}"
+
+
+def _is_supported_skyscanner_api() -> bool:
+    """Return false for generic RapidAPI scraper products that lack hotel endpoints."""
+    host = _skyscanner_host()
+    if host == "sky-scrapper3.p.rapidapi.com":
+        msg = (
+            "RAPIDAPI_SKY_HOST=sky-scrapper3.p.rapidapi.com is a generic POST /scrape "
+            "API, not the Sky-Scrapper hotels API. Use a RapidAPI subscription whose "
+            "sample code calls /api/v1/hotels/searchHotels."
+        )
+        print(f"[skyscanner_hotels] {msg}")
+        _LAST_ERRORS.append(msg)
+        return False
+    return True
 
 
 def _normalise(raw: dict[str, Any], source: str, config: dict[str, Any]) -> dict[str, Any]:
@@ -194,22 +227,23 @@ def _fetch_skyscanner_hotels(config: dict[str, Any]) -> list[dict[str, Any]]:
     """
     import requests
 
-    key = os.environ.get("RAPIDAPI_KEY")
+    key = _rapidapi_sky_key()
     if not key:
-        msg = "RAPIDAPI_KEY not set — skipping Skyscanner hotels."
+        msg = "RAPIDAPI_KEY/RAPIDAPI_SKY_KEY not set - skipping Skyscanner hotels."
         print(f"[skyscanner_hotels] {msg}")
         _LAST_ERRORS.append(msg)
         return []
 
     trip = config["trip"]
+    host = _skyscanner_host()
     headers = {
         "x-rapidapi-key": key,
-        "x-rapidapi-host": SKYSCANNER_HOST,
+        "x-rapidapi-host": host,
         "Content-Type": "application/json",
     }
     try:
         resp = requests.get(
-            f"https://{SKYSCANNER_HOST}/api/v1/hotels/searchHotels",
+            _skyscanner_hotels_url(),
             headers=headers,
             params={
                 "entityId": SKYSCANNER_WARSAW_ENTITY_ID,
@@ -222,7 +256,7 @@ def _fetch_skyscanner_hotels(config: dict[str, Any]) -> list[dict[str, Any]]:
             timeout=30,
         )
         if resp.status_code >= 400:
-            msg = f"Skyscanner hotels HTTP {resp.status_code}: {resp.text[:200]}"
+            msg = f"Skyscanner hotels HTTP {resp.status_code} via host {host}: {resp.text[:200]}"
             print(f"[skyscanner_hotels] {msg}")
             _LAST_ERRORS.append(msg)
             return []
@@ -582,18 +616,18 @@ def fetch_accommodation(config: dict[str, Any], dry_run: bool = False) -> list[d
             _LAST_ERRORS.append(msg)
 
         # ---- Aggregator source ----
-        if "skyscanner" in sources:
+        if "skyscanner" in sources and _is_supported_skyscanner_api():
             sky_results = _fetch_skyscanner_hotels(config)
             if sky_results:
                 results += sky_results
-            elif not os.environ.get("RAPIDAPI_KEY"):
-                _LAST_ERRORS.append("RAPIDAPI_KEY missing — skipping Skyscanner hotels.")
+            elif not _rapidapi_sky_key():
+                _LAST_ERRORS.append("RAPIDAPI_KEY/RAPIDAPI_SKY_KEY missing - skipping Skyscanner hotels.")
             else:
                 _LAST_ERRORS.append("Skyscanner hotels returned 0 rows.")
 
         # Fall back to mock if every configured source returned nothing AND no live
         # credentials exist — preserves the old "first run on a laptop" UX.
-        if not results and not token and not os.environ.get("RAPIDAPI_KEY"):
+        if not results and not token and not _rapidapi_sky_key():
             results = _mock_data(config)
 
     results = _dedupe_results(results)
