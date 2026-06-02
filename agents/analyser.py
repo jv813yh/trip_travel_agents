@@ -28,7 +28,7 @@ GROUP CONTEXT:
 - {trip['group_size']} people travelling from {trip['origin_city']} ({trip['origin_airport']})
 - Target accommodation area: {acc['target_address']}
 - Travel dates: {trip['dates']['outbound']} to {trip['dates']['return']} ({acc.get('nights')} nights)
-- Budget: max EUR {acc['max_price_per_night_eur']}/night total for accommodation, max EUR {transport['budget_flight_eur']}/person for flights (one-way), max EUR {transport['budget_bus_eur']}/person for FlixBus (one-way)
+- Budget: max EUR {acc['max_price_per_night_eur']}/person/night for accommodation, max EUR {transport['budget_flight_eur']}/person for flights (one-way), max EUR {transport['budget_bus_eur']}/person for FlixBus (one-way)
 
 YOUR TASK:
 Given today's scraped data, select the TOP 2 accommodation options and TOP 1 transport option.
@@ -58,6 +58,9 @@ OUTPUT_SCHEMA_HINT = {
                 "alert_triggered": False,
                 "booking_link": "str",
                 "coordinates": {"lat": 0, "lng": 0},
+                "rooms": 1,
+                "total_group_cost_eur": 0,
+                "price_basis": "eur_per_person_per_night",
             }
         ],
         "alerts": [],
@@ -184,6 +187,9 @@ def _analyse_deterministic(
                 "alert_triggered": a.get("alert_triggered", False),
                 "booking_link": a["booking_link"],
                 "coordinates": {"lat": a.get("lat"), "lng": a.get("lng")},
+                "rooms": a.get("rooms"),
+                "total_group_cost_eur": a.get("total_group_cost_eur"),
+                "price_basis": a.get("price_basis"),
             }
         )
 

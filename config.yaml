@@ -16,7 +16,7 @@ accommodation:
   max_price_per_night_eur: 70
   min_rating: 8.5                     # Booking.com scale 0–10
   max_distance_km: 3.0
-  nights: 4
+  nights: 3
   sources:
     - booking_com     # Apify voyager/booking-scraper
     - airbnb          # Apify tri_angle/airbnb-scraper

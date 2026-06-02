@@ -16,6 +16,7 @@ Run standalone:
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import os
 import sys
 from pathlib import Path
@@ -52,7 +53,7 @@ def _merge_query(url: str, overrides: dict[str, Any]) -> str:
     parts = _u.urlsplit(url)
     kept = [(k, v) for k, v in _u.parse_qsl(parts.query, keep_blank_values=True)
             if k not in overrides]
-    merged = kept + [(k, str(v)) for k, v in overrides.items()]
+    merged = kept + [(k, str(v)) for k, v in overrides.items() if v is not None]
     return _u.urlunsplit((parts.scheme, parts.netloc, parts.path,
                           _u.urlencode(merged), parts.fragment))
 
@@ -66,7 +67,7 @@ def _booking_deep_link(url: str | None, config: dict[str, Any]) -> str | None:
         "checkin": trip["dates"]["outbound"],
         "checkout": trip["dates"]["return"],
         "group_adults": trip["group_size"],
-        "no_rooms": 1,
+        "no_rooms": None,
         "group_children": 0,
     })
 
@@ -110,6 +111,9 @@ def _normalise(raw: dict[str, Any], source: str, config: dict[str, Any]) -> dict
         "distance_km": dist,
         "availability": raw.get("availability", True),
         "booking_link": raw.get("booking_link"),
+        "rooms": raw.get("rooms"),
+        "total_group_cost_eur": raw.get("total_group_cost_eur"),
+        "price_basis": raw.get("price_basis"),
     }
     record["composite_score"] = (
         composite_score(price, rating, dist, config, source)
@@ -144,12 +148,19 @@ def _fetch_booking(client: Any, config: dict[str, Any]) -> list[dict[str, Any]]:
     items = _run_actor(client, BOOKING_ACTOR, run_input)
     out = []
     for it in items:
+        rooms = _infer_room_count(it)
+        price_fields = _normalise_accommodation_price(
+            _coerce_price(it.get("price")),
+            config,
+            rooms=rooms,
+            price_covers_all_rooms=True,
+        )
         out.append(
             _normalise(
                 {
                     "hotel_id": f"bk_{it.get('hotelId') or it.get('id')}",
                     "name": it.get("name"),
-                    "price_eur": _to_per_night(_coerce_price(it.get("price")), config),
+                    **price_fields,
                     "rating": it.get("rating"),
                     "lat": (it.get("location") or {}).get("lat") or it.get("lat"),
                     "lng": (it.get("location") or {}).get("lng") or it.get("lng"),
@@ -171,7 +182,6 @@ def _skyscanner_hotel_link(hotel_id: str, config: dict[str, Any]) -> str:
         "checkin": trip["dates"]["outbound"],
         "checkout": trip["dates"]["return"],
         "adults": trip["group_size"],
-        "rooms": 1,
     })
     return f"https://www.skyscanner.com/hotels/hotel/{hotel_id}?{q}"
 
@@ -207,7 +217,6 @@ def _fetch_skyscanner_hotels(config: dict[str, Any]) -> list[dict[str, Any]]:
                 "checkin": trip["dates"]["outbound"],
                 "checkout": trip["dates"]["return"],
                 "adults": str(trip["group_size"]),
-                "rooms": "1",
                 "currency": "EUR",
                 "sorting": "-relevance",
             },
@@ -228,6 +237,13 @@ def _fetch_skyscanner_hotels(config: dict[str, Any]) -> list[dict[str, Any]]:
     hotels = (payload.get("data") or {}).get("hotels", [])
     out = []
     for h in hotels:
+        rooms = _infer_room_count(h)
+        price_fields = _normalise_accommodation_price(
+            _coerce_float(h.get("rawPrice")),
+            config,
+            rooms=rooms,
+            price_covers_all_rooms=True,
+        )
         coords = h.get("coordinates") or [None, None]
         # Sky-Scrapper returns [lng, lat] — note the order.
         lng, lat = (coords[0], coords[1]) if len(coords) == 2 else (None, None)
@@ -241,7 +257,7 @@ def _fetch_skyscanner_hotels(config: dict[str, Any]) -> list[dict[str, Any]]:
                 {
                     "hotel_id": f"sk_{h.get('hotelId')}",
                     "name": h.get("name"),
-                    "price_eur": _coerce_float(h.get("rawPrice")),
+                    **price_fields,
                     "rating": rating,
                     "lat": lat,
                     "lng": lng,
@@ -276,6 +292,12 @@ def _fetch_airbnb(client: Any, config: dict[str, Any]) -> list[dict[str, Any]]:
     for it in items:
         coords = it.get("coordinates") or {}
         price = it.get("price") or it.get("pricing")
+        price_fields = _normalise_accommodation_price(
+            _coerce_price(price),
+            config,
+            rooms=1,
+            price_covers_all_rooms=True,
+        )
         if isinstance(coords, list) and len(coords) == 2:
             coords = {"lng": coords[0], "lat": coords[1]}
         out.append(
@@ -283,7 +305,7 @@ def _fetch_airbnb(client: Any, config: dict[str, Any]) -> list[dict[str, Any]]:
                 {
                     "hotel_id": f"ab_{it.get('id')}",
                     "name": it.get("name") or it.get("title"),
-                    "price_eur": _to_per_night(_coerce_price(price), config),
+                    **price_fields,
                     "rating": it.get("rating") or it.get("stars"),
                     "lat": it.get("lat") or coords.get("latitude") or coords.get("lat"),
                     "lng": it.get("lng") or coords.get("longitude") or coords.get("lng"),
@@ -302,6 +324,16 @@ def _coerce_float(value: Any) -> float | None:
         return None
     try:
         return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = int(float(str(value).split()[0]))
+        return parsed if parsed > 0 else None
     except (TypeError, ValueError):
         return None
 
@@ -353,44 +385,120 @@ def _coerce_price(value: Any) -> float | None:
     return float(digits) if digits else None
 
 
-def _to_per_night(raw_price: float | None, config: dict[str, Any]) -> float | None:
-    """Convert a raw actor price to per-night EUR.
-
-    Booking/Airbnb actors sometimes return a stay-total in the same field they
-    elsewhere use for nightly rates. Heuristic: if the value is implausibly
-    large for a nightly rate (>2× the configured per-night budget), assume it
-    is a stay-total for `accommodation.nights` nights and divide. This makes
-    the conversion explicit (the critic flagged silent reinterpretation).
-    """
-    if raw_price is None:
+def _infer_room_count(value: Any) -> int | None:
+    """Best-effort room/unit count from provider-specific result fields."""
+    if not isinstance(value, dict):
         return None
+    for key in (
+        "rooms", "roomCount", "room_count", "noRooms", "no_rooms",
+        "numberOfRooms", "selectedRooms", "bedrooms", "bedroomCount",
+    ):
+        if key in value:
+            parsed = _coerce_int(value[key])
+            if parsed is not None:
+                return parsed
+    for key in ("room", "roomInfo", "unit", "selectedRoom", "accommodation"):
+        nested = value.get(key)
+        if isinstance(nested, dict):
+            parsed = _infer_room_count(nested)
+            if parsed is not None:
+                return parsed
+    for key in ("rooms", "roomTypes", "blocks", "units"):
+        nested_list = value.get(key)
+        if isinstance(nested_list, list) and nested_list:
+            return len(nested_list)
+    return None
+
+
+def _stay_nights(config: dict[str, Any]) -> int:
+    """Return nights from trip dates, falling back to config if parsing fails."""
+    try:
+        dates = config["trip"]["dates"]
+        outbound = dt.date.fromisoformat(dates["outbound"])
+        return_date = dt.date.fromisoformat(dates["return"])
+        return max(1, (return_date - outbound).days)
+    except (KeyError, TypeError, ValueError):
+        return max(1, int(config["accommodation"].get("nights", 1)))
+
+
+def _normalise_accommodation_price(
+    raw_price: float | None,
+    config: dict[str, Any],
+    *,
+    rooms: int | None,
+    price_covers_all_rooms: bool = False,
+) -> dict[str, Any]:
+    """Convert a provider price to EUR per person per night.
+
+    Providers may return either a nightly price or a whole-stay total. For
+    Hotel-style sources are queried for the configured group size, so their
+    observed price should cover the returned offer. If a source only returns a
+    one-room price and also tells us the room count, pass price_covers_all_rooms=False.
+    """
+    basis = "eur_per_person_per_night"
+    if raw_price is None:
+        return {
+            "price_eur": None,
+            "rooms": rooms,
+            "total_group_cost_eur": None,
+            "price_basis": basis,
+        }
+
     acc = config["accommodation"]
     budget = acc["max_price_per_night_eur"]
-    nights = max(1, int(acc.get("nights", 1)))
-    if raw_price > budget * 2 and nights > 1:
-        return round(raw_price / nights, 2)
-    return float(raw_price)
+    nights = _stay_nights(config)
+    group_size = max(1, int(config["trip"]["group_size"]))
+    rooms = _coerce_int(rooms)
+    room_multiplier = 1 if price_covers_all_rooms else (rooms or 1)
+    is_stay_total = raw_price > budget * 2 and nights > 1
+
+    if is_stay_total:
+        per_person_per_night = raw_price * room_multiplier / group_size / nights
+    else:
+        per_person_per_night = raw_price * room_multiplier / group_size
+
+    total_group_cost = per_person_per_night * group_size * nights
+    return {
+        "price_eur": round(per_person_per_night, 2),
+        "rooms": rooms,
+        "total_group_cost_eur": round(total_group_cost, 2),
+        "price_basis": basis,
+    }
 
 
 def _mock_data(config: dict[str, Any]) -> list[dict[str, Any]]:
     """Deterministic sample used by --dry-run and when APIFY_TOKEN is missing."""
+    group_size = max(1, int(config["trip"]["group_size"]))
+    nights = _stay_nights(config)
     raw = [
         {
             "hotel_id": "bk_123456", "name": "Apartmán Centrum Warsaw",
             "price_eur": 72, "rating": 9.1, "lat": 52.2290, "lng": 21.0120,
-            "booking_link": "https://www.booking.com/hotel/pl/apartman-centrum.html",
+            "booking_link": _booking_deep_link(
+                "https://www.booking.com/hotel/pl/apartman-centrum.html",
+                config,
+            ),
+            "rooms": None,
         },
         {
             "hotel_id": "ab_789012", "name": "Cozy Studio Śródmieście",
             "price_eur": 65, "rating": 4.87, "lat": 52.2310, "lng": 21.0090,
             "booking_link": "https://www.airbnb.com/rooms/789012",
+            "rooms": 1,
         },
         {
             "hotel_id": "bk_654321", "name": "Hotel Marszałkowska 18",
             "price_eur": 88, "rating": 8.7, "lat": 52.2250, "lng": 21.0150,
-            "booking_link": "https://www.booking.com/hotel/pl/marszalkowska-18.html",
+            "booking_link": _booking_deep_link(
+                "https://www.booking.com/hotel/pl/marszalkowska-18.html",
+                config,
+            ),
+            "rooms": None,
         },
     ]
+    for item in raw:
+        item["total_group_cost_eur"] = round(item["price_eur"] * group_size * nights, 2)
+        item["price_basis"] = "eur_per_person_per_night"
     return [
         _normalise(r, "airbnb" if r["hotel_id"].startswith("ab_") else "booking_com", config)
         for r in raw

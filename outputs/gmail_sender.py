@@ -94,7 +94,7 @@ def _score_breakdown(
     dist_label = label(dist_pts, 25, [(75, "very close"), (50, "close"), (25, "walkable"), (0, "far")])
 
     return (
-        f"€{price:g}/night → {price_label} (+{price_pts:.0f}/40) · "
+        f"€{price:g}/person/night → {price_label} (+{price_pts:.0f}/40) · "
         f"rating {rating:g} → {rating_label} (+{rating_pts:.0f}/35) · "
         f"{distance_km:.2f} km → {dist_label} (+{dist_pts:.0f}/25)"
     )
@@ -281,7 +281,7 @@ def build_html(analysis: dict[str, Any], history_df: pd.DataFrame, config: dict[
         )
     parts.append(
         "<p style='color:#777;font-size:12px;margin-top:-8px'>"
-        "Match score is out of 100: price (40 pts) + rating (35 pts) + "
+        "Match score is out of 100: price per person per night (40 pts) + rating (35 pts) + "
         "distance to your friends (25 pts). Higher is better."
         "</p>"
     )
@@ -296,10 +296,22 @@ def build_html(analysis: dict[str, Any], history_df: pd.DataFrame, config: dict[
             config,
             source=p.get("source", "booking_com"),
         )
+        rooms = p.get("rooms")
+        total = p.get("total_group_cost_eur")
+        room_text = (
+            f" · {rooms} room{'s' if rooms != 1 else ''}"
+            if rooms else " · room count from provider not confirmed"
+        )
+        cost_context = (
+            f"<br><span style='color:#555;font-size:13px'>Estimated group total: €{total:g}"
+            + room_text
+            + "</span>"
+            if total is not None else ""
+        )
         parts.append(
             f"<p><b>#{p['rank']} {p['name']}</b>{alert_badge}<br>"
             f"<b>Match: {p['composite_score']:.0f}/100</b>{vs_y_str}<br>"
-            f"<span style='color:#555;font-size:13px'>{breakdown}</span><br>"
+            f"<span style='color:#555;font-size:13px'>{breakdown}</span>{cost_context}<br>"
             f"<a href='{p['booking_link']}'>Book →</a></p>"
         )
 
@@ -327,7 +339,7 @@ def build_html(analysis: dict[str, Any], history_df: pd.DataFrame, config: dict[
 def _subject(analysis: dict[str, Any]) -> str:
     picks = analysis["accommodation"]["top_picks"]
     top_price = picks[0]["price_eur_per_night"] if picks else "?"
-    return f"🏕️ Warsaw Trip Update — {analysis['run_date']} | Top pick: €{top_price}/night"
+    return f"🏕️ Warsaw Trip Update — {analysis['run_date']} | Top pick: €{top_price}/person/night"
 
 
 def _gmail_service():

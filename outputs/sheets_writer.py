@@ -48,6 +48,9 @@ COLUMNS = {
         ("availability", "bool", 100),
         ("booking_link", "link", 220),
         ("composite_score", "number", 110),
+        ("rooms", "integer", 70),
+        ("total_group_cost_eur", "eur", 135),
+        ("price_basis", "text", 180),
     ],
     "transport_raw": [
         ("date", "date", 90),
@@ -73,6 +76,9 @@ COLUMNS = {
         ("alert_triggered", "bool", 110),
         ("link", "link", 220),
         ("hotel_id", "text", 110),
+        ("rooms", "integer", 70),
+        ("total_group_cost_eur", "eur", 135),
+        ("price_basis", "text", 180),
     ],
     "accommodation_stats": [
         ("hotel_id", "text", 120),
@@ -499,6 +505,7 @@ class SheetsWriter:
                 run_date, o["hotel_id"], o["source"], o["name"], o["price_eur"],
                 o["rating"], o["lat"], o["lng"], o["distance_km"],
                 o.get("availability", True), o["booking_link"], o.get("composite_score"),
+                o.get("rooms"), o.get("total_group_cost_eur"), o.get("price_basis"),
             ]
             for o in options
         ]
@@ -529,6 +536,9 @@ class SheetsWriter:
                     vs_7 / 100 if vs_7 is not None else None,
                     pick.get("alert_triggered", False), pick["booking_link"],
                     pick.get("hotel_id"),
+                    pick.get("rooms"),
+                    pick.get("total_group_cost_eur"),
+                    pick.get("price_basis"),
                 ]
             )
         self._append("daily_top2", rows)
