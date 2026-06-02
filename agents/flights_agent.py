@@ -45,18 +45,26 @@ AIRPORT_IDS: dict[str, dict[str, str]] = {
 _LAST_ERRORS: list[str] = []
 
 
+def _env_value(name: str) -> str | None:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
 def _rapidapi_key() -> str | None:
     """Return the Sky Scrapper-specific RapidAPI key, falling back to shared key."""
-    return os.environ.get("RAPIDAPI_SKY_KEY") or os.environ.get("RAPIDAPI_KEY")
+    return _env_value("RAPIDAPI_SKY_KEY") or _env_value("RAPIDAPI_KEY")
 
 
 def _rapidapi_host() -> str:
     """Return the RapidAPI host for the subscribed Sky Scrapper API product."""
-    return os.environ.get("RAPIDAPI_SKY_HOST", DEFAULT_RAPIDAPI_HOST)
+    return _env_value("RAPIDAPI_SKY_HOST") or DEFAULT_RAPIDAPI_HOST
 
 
 def _search_url() -> str:
-    path = os.environ.get("RAPIDAPI_SKY_FLIGHTS_PATH", DEFAULT_SEARCH_PATH)
+    path = _env_value("RAPIDAPI_SKY_FLIGHTS_PATH") or DEFAULT_SEARCH_PATH
     if not path.startswith("/"):
         path = f"/{path}"
     return f"https://{_rapidapi_host()}{path}"

@@ -93,18 +93,26 @@ DEFAULT_SKYSCANNER_HOTELS_PATH = "/api/v1/hotels/searchHotels"
 SKYSCANNER_WARSAW_ENTITY_ID = "27547454"
 
 
+def _env_value(name: str) -> str | None:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
 def _rapidapi_sky_key() -> str | None:
     """Return the Sky Scrapper-specific RapidAPI key, falling back to shared key."""
-    return os.environ.get("RAPIDAPI_SKY_KEY") or os.environ.get("RAPIDAPI_KEY")
+    return _env_value("RAPIDAPI_SKY_KEY") or _env_value("RAPIDAPI_KEY")
 
 
 def _skyscanner_host() -> str:
     """Return the RapidAPI host for the subscribed Sky Scrapper API product."""
-    return os.environ.get("RAPIDAPI_SKY_HOST", DEFAULT_SKYSCANNER_HOST)
+    return _env_value("RAPIDAPI_SKY_HOST") or DEFAULT_SKYSCANNER_HOST
 
 
 def _skyscanner_hotels_url() -> str:
-    path = os.environ.get("RAPIDAPI_SKY_HOTELS_PATH", DEFAULT_SKYSCANNER_HOTELS_PATH)
+    path = _env_value("RAPIDAPI_SKY_HOTELS_PATH") or DEFAULT_SKYSCANNER_HOTELS_PATH
     if not path.startswith("/"):
         path = f"/{path}"
     return f"https://{_skyscanner_host()}{path}"
