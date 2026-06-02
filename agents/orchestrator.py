@@ -24,11 +24,14 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from agents.accommodation_agent import fetch_accommodation  # noqa: E402
+from agents.accommodation_agent import (  # noqa: E402
+    fetch_accommodation,
+    get_last_errors as _accommodation_errors,
+)
 from agents.analyser import OUTPUT_SCHEMA_HINT, analyse  # noqa: E402
 from agents.critic import critique  # noqa: E402
-from agents.flights_agent import fetch_flights  # noqa: E402
-from agents.flixbus_agent import fetch_flixbus  # noqa: E402
+from agents.flights_agent import fetch_flights, get_last_errors as _flight_errors  # noqa: E402
+from agents.flixbus_agent import fetch_flixbus, get_last_errors as _flixbus_errors  # noqa: E402
 from agents.price_tracker import check_price_alerts  # noqa: E402
 from models import AgentOutput  # noqa: E402
 from outputs import gmail_sender  # noqa: E402
@@ -53,10 +56,16 @@ def run(dry_run: bool = False) -> dict:
 
     # 1–2. Fetch data
     accommodation = fetch_accommodation(config, dry_run=dry_run)
+    accommodation_warnings = _accommodation_errors()
     flights = fetch_flights(config, dry_run=dry_run)
     flixbus = fetch_flixbus(config, dry_run=dry_run)
     transport = flights + flixbus
+    transport_warnings = _flight_errors() + _flixbus_errors()
     print(f"  fetched {len(accommodation)} stays, {len(transport)} transport options")
+    if accommodation_warnings:
+        print(f"  accommodation warnings: {accommodation_warnings}")
+    if transport_warnings:
+        print(f"  transport API warnings: {transport_warnings}")
 
     # 3. Price history + alerts
     sheets = SheetsWriter(config, dry_run=dry_run)
@@ -86,6 +95,8 @@ def run(dry_run: bool = False) -> dict:
     analysis = AgentOutput.model_validate(raw_analysis)
     analysis_dict = analysis.model_dump()
     analysis_dict["_critic"] = final_verdict   # surfaced in the email if invalid
+    analysis_dict["_transport_warnings"] = transport_warnings  # API failures, shown in email
+    analysis_dict["_accommodation_warnings"] = accommodation_warnings  # fallback notices, shown in email
 
     # 5. Persist to Sheets (no-op without credentials)
     if not dry_run:

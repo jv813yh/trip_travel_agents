@@ -1,7 +1,9 @@
 """FlixBus agent — fetches bus prices Košice -> Warsaw for the outbound date.
 
-Source: FlixBus API via RapidAPI (flixbus.p.rapidapi.com).
-City IDs: Košice = 39, Warsaw = 36 (per CLAUDE.md).
+Source: FlixBus API via RapidAPI (flixbus-api2.p.rapidapi.com).
+City IDs are FlixBus UUIDs (not numeric Slovak/Polish municipal codes).
+  Košice: 40d8f682-8646-11e6-9066-549f350fcb0c
+  Warsaw: 40de8964-8646-11e6-9066-549f350fcb0c
 
 In production, returns [] when no trips are found — never falls back to mock
 data. When the configured date has no trips, the agent tries ±1 day and tags
@@ -26,10 +28,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from utils.config_loader import load_config  # noqa: E402
 
-RAPIDAPI_HOST = "flixbus.p.rapidapi.com"
-SEARCH_URL = f"https://{RAPIDAPI_HOST}/search_trips"
-KOSICE_CITY_ID = "39"
-WARSAW_CITY_ID = "36"
+RAPIDAPI_HOST = "flixbus-api2.p.rapidapi.com"
+SEARCH_URL = f"https://{RAPIDAPI_HOST}/search"
+# FlixBus internal city UUIDs (resolved once via the /autocomplete endpoint;
+# rerun that endpoint if cities change). NOT the docs-example UUIDs — those
+# are Berlin / Paris.
+KOSICE_CITY_ID = "40e0fdb7-8646-11e6-9066-549f350fcb0c"
+WARSAW_CITY_ID = "40e19c59-8646-11e6-9066-549f350fcb0c"
+
+# Module-level warning bucket — populated by _query() on API failure, drained
+# by the orchestrator via get_last_errors() and surfaced in the email.
+_LAST_ERRORS: list[str] = []
+
+
+def get_last_errors() -> list[str]:
+    """Return + clear any warnings recorded by the most recent fetch."""
+    out = list(_LAST_ERRORS)
+    _LAST_ERRORS.clear()
+    return out
 
 
 def _trip_id(date: str, idx: int) -> str:
@@ -76,39 +92,59 @@ def _query(date: str) -> list[dict[str, Any]]:
     import requests
 
     key = os.environ["RAPIDAPI_KEY"]
-    headers = {"X-RapidAPI-Key": key, "X-RapidAPI-Host": RAPIDAPI_HOST}
+    headers = {
+        "x-rapidapi-key": key,
+        "x-rapidapi-host": RAPIDAPI_HOST,
+        "Content-Type": "application/json",
+    }
     try:
         resp = requests.get(
             SEARCH_URL, headers=headers,
             params={
-                "from_city_id": KOSICE_CITY_ID,
-                "to_city_id": WARSAW_CITY_ID,
-                "departure_date": date,
+                "fromCityId": KOSICE_CITY_ID,
+                "toCityId": WARSAW_CITY_ID,
+                "date": date,
                 "adult": "1",
+                "children": "0",
+                "bikes": "0",
                 "currency": "EUR",
+                "locale": "en",
             },
             timeout=30,
         )
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            msg = f"FlixBus API HTTP {resp.status_code}: {resp.text[:200]}"
+            print(f"[flixbus] {msg}")
+            _LAST_ERRORS.append(msg)
+            return []
         payload = resp.json()
-    except (requests.RequestException, ValueError):
+    except (requests.RequestException, ValueError) as e:
+        msg = f"FlixBus API call failed: {type(e).__name__}: {e}"
+        print(f"[flixbus] {msg}")
+        _LAST_ERRORS.append(msg)
         return []
 
     trips = payload.get("trips", []) or payload.get("data", [])
     out = []
     for t in trips:
-        price = (t.get("price") or {}).get("total") or t.get("price_eur")
+        if t.get("status") and t["status"] != "available":
+            continue
+        price_obj = t.get("price") or {}
+        dur = t.get("duration") or {}
+        duration_min = (
+            int(dur.get("hours", 0)) * 60 + int(dur.get("minutes", 0))
+            if isinstance(dur, dict) else dur
+        ) or None
+        dep_time = (t.get("departure") or {}).get("time")
+        arr_time = (t.get("arrival") or {}).get("time")
         out.append({
-            "price_eur": price,
-            "duration_min": (
-                t.get("duration", {}).get("minutes")
-                if isinstance(t.get("duration"), dict)
-                else t.get("duration_min")
-            ),
-            "departure": t.get("departure"),
-            "arrival": t.get("arrival"),
-            "stops": len(t.get("transfers", [])) if t.get("transfers") else 0,
-            "booking_link": t.get("url"),
+            "price_eur": price_obj.get("total"),
+            "duration_min": duration_min,
+            # Trim ISO timestamps to HH:MM for display (e.g. "2026-08-07T03:20:00+02:00" -> "03:20")
+            "departure": dep_time[11:16] if isinstance(dep_time, str) and len(dep_time) >= 16 else dep_time,
+            "arrival": arr_time[11:16] if isinstance(arr_time, str) and len(arr_time) >= 16 else arr_time,
+            "stops": int(t.get("intermediateStops") or 0),
+            "booking_link": None,  # API does not expose a direct deep link; built by _deep_link()
         })
     return out
 

@@ -1,8 +1,11 @@
 """Flights agent — fetches one-way flight prices KSC -> WAW/WMI.
 
-Primary source: Skyscanner Flights Search API via RapidAPI
-(skyscanner50.p.rapidapi.com). Stores a route-hash trip_id so price history
-attributes to the same route+carrier over time.
+Primary source: Sky-Scrapper API via RapidAPI (sky-scrapper.p.rapidapi.com).
+This is the "Air Scraper"-style endpoint family — uses a two-id system
+(skyId + entityId per airport). We hardcode the IDs for our three airports
+(resolved once via /api/v1/flights/searchAirport); refresh them via that
+endpoint if anything stops working. Stores a route-hash trip_id so price
+history attributes to the same route+carrier over time.
 
 In production this NEVER returns mock data — empty results propagate so the
 critic agent can flag "no transport available". When the configured outbound
@@ -28,8 +31,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from utils.config_loader import load_config  # noqa: E402
 
-RAPIDAPI_HOST = "skyscanner50.p.rapidapi.com"
-SEARCH_URL = f"https://{RAPIDAPI_HOST}/api/v1/searchFlights"
+RAPIDAPI_HOST = "sky-scrapper.p.rapidapi.com"
+SEARCH_URL = f"https://{RAPIDAPI_HOST}/api/v2/flights/searchFlights"
+
+# Sky-Scrapper requires both skyId (IATA-like) AND entityId per airport.
+# Resolved via /api/v1/flights/searchAirport; refresh if airports change.
+AIRPORT_IDS: dict[str, dict[str, str]] = {
+    "KSC": {"skyId": "KSC", "entityId": "104120247"},  # Košice
+    "WAW": {"skyId": "WAW", "entityId": "95673438"},   # Warsaw Chopin
+    "WMI": {"skyId": "WMI", "entityId": "128667439"},  # Warsaw Modlin
+}
+
+_LAST_ERRORS: list[str] = []
+
+
+def get_last_errors() -> list[str]:
+    """Return + clear warnings recorded by the most recent fetch."""
+    out = list(_LAST_ERRORS)
+    _LAST_ERRORS.clear()
+    return out
 
 
 def _trip_id(origin: str, dest: str, date: str, carrier: str) -> str:
@@ -84,37 +104,73 @@ def _query_skyscanner(origin: str, dest: str, date: str, max_stops: int) -> list
     """
     import requests
 
+    origin_ids = AIRPORT_IDS.get(origin)
+    dest_ids = AIRPORT_IDS.get(dest)
+    if not origin_ids or not dest_ids:
+        msg = f"No Sky-Scrapper IDs hardcoded for {origin}->{dest}; refresh AIRPORT_IDS."
+        print(f"[flights] {msg}")
+        _LAST_ERRORS.append(msg)
+        return []
+
     key = os.environ["RAPIDAPI_KEY"]
-    headers = {"X-RapidAPI-Key": key, "X-RapidAPI-Host": RAPIDAPI_HOST}
+    headers = {
+        "x-rapidapi-key": key,
+        "x-rapidapi-host": RAPIDAPI_HOST,
+        "Content-Type": "application/json",
+    }
     try:
         resp = requests.get(
-            SEARCH_URL,
-            headers=headers,
+            SEARCH_URL, headers=headers,
             params={
-                "origin": origin, "destination": dest, "date": date,
-                "adults": "1", "currency": "EUR",
+                "originSkyId": origin_ids["skyId"],
+                "destinationSkyId": dest_ids["skyId"],
+                "originEntityId": origin_ids["entityId"],
+                "destinationEntityId": dest_ids["entityId"],
+                "date": date,
+                "adults": "1",
+                "currency": "EUR",
+                "cabinClass": "economy",
+                "sortBy": "best",
             },
             timeout=30,
         )
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            msg = (
+                f"Sky-Scrapper API HTTP {resp.status_code} for "
+                f"{origin}->{dest} {date}: {resp.text[:200]}"
+            )
+            print(f"[flights] {msg}")
+            _LAST_ERRORS.append(msg)
+            return []
         payload = resp.json()
-    except (requests.RequestException, ValueError):
+    except (requests.RequestException, ValueError) as e:
+        msg = f"Sky-Scrapper API call failed ({origin}->{dest} {date}): {type(e).__name__}: {e}"
+        print(f"[flights] {msg}")
+        _LAST_ERRORS.append(msg)
         return []
 
     out = []
-    for item in payload.get("data", []):
+    itineraries = (payload.get("data") or {}).get("itineraries", [])
+    for item in itineraries:
         legs = item.get("legs") or [{}]
-        stops = legs[0].get("stops", 0)
+        leg = legs[0]
+        stops = leg.get("stopCount", 0)
         if stops > max_stops:
             continue
+        marketing = (leg.get("carriers") or {}).get("marketing") or [{}]
+        carrier = marketing[0].get("name") if marketing else None
+        dep = leg.get("departure") or ""
+        arr = leg.get("arrival") or ""
         out.append({
-            "carrier": (legs[0].get("carriers") or ["Unknown"])[0],
-            "price_eur": (item.get("price") or {}).get("amount"),
-            "duration_min": legs[0].get("durationInMinutes"),
-            "departure": legs[0].get("departure"),
-            "arrival": legs[0].get("arrival"),
+            "carrier": carrier or "Unknown",
+            "price_eur": (item.get("price") or {}).get("raw"),
+            "duration_min": leg.get("durationInMinutes"),
+            # Trim ISO "2026-08-07T15:05:00" -> "15:05"
+            "departure": dep[11:16] if len(dep) >= 16 else dep,
+            "arrival": arr[11:16] if len(arr) >= 16 else arr,
             "stops": stops,
-            "booking_link": item.get("deeplink") or item.get("url"),
+            # Sky-Scrapper does not return a deep link; _deep_link() builds one.
+            "booking_link": None,
         })
     return out
 

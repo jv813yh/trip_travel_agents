@@ -30,6 +30,17 @@ from utils.config_loader import load_config  # noqa: E402
 from utils.distance import distance_km  # noqa: E402
 from utils.scorer import composite_score  # noqa: E402
 
+# Module-level warning bucket — drained by the orchestrator via get_last_errors()
+# and surfaced in the daily email when a fallback path was used.
+_LAST_ERRORS: list[str] = []
+
+
+def get_last_errors() -> list[str]:
+    """Return + clear warnings recorded by the most recent fetch."""
+    out = list(_LAST_ERRORS)
+    _LAST_ERRORS.clear()
+    return out
+
 
 def _merge_query(url: str, overrides: dict[str, Any]) -> str:
     """Return `url` with `overrides` merged into its query string.
@@ -73,6 +84,11 @@ def _airbnb_deep_link(url: str | None, config: dict[str, Any]) -> str | None:
 
 BOOKING_ACTOR = "voyager/booking-scraper"
 AIRBNB_ACTOR = "tri_angle/airbnb-scraper"
+
+# Sky-Scrapper hotels — resolved once via /hotels/searchDestinationOrHotel.
+# Refresh if the city changes.
+SKYSCANNER_HOST = "sky-scrapper.p.rapidapi.com"
+SKYSCANNER_WARSAW_ENTITY_ID = "27547454"
 
 
 def _normalise(raw: dict[str, Any], source: str, config: dict[str, Any]) -> dict[str, Any]:
@@ -141,6 +157,92 @@ def _fetch_booking(client: Any, config: dict[str, Any]) -> list[dict[str, Any]]:
                     "booking_link": _booking_deep_link(it.get("url"), config),
                 },
                 "booking_com",
+                config,
+            )
+        )
+    return out
+
+
+def _skyscanner_hotel_link(hotel_id: str, config: dict[str, Any]) -> str:
+    """Build a Skyscanner hotel detail URL with dates + pax pre-filled."""
+    trip = config["trip"]
+    q = _u.urlencode({
+        "entity_id": SKYSCANNER_WARSAW_ENTITY_ID,
+        "checkin": trip["dates"]["outbound"],
+        "checkout": trip["dates"]["return"],
+        "adults": trip["group_size"],
+        "rooms": 1,
+    })
+    return f"https://www.skyscanner.com/hotels/hotel/{hotel_id}?{q}"
+
+
+def _fetch_skyscanner_hotels(config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Sky-Scrapper hotels search → common schema.
+
+    Aggregates Booking/Hotels.com/Expedia; `rawPrice` is per-night EUR (we
+    verified: priceDescription matches rawPrice × nights). Uses RapidAPI free
+    tier — does NOT count against Apify quota.
+    """
+    import requests
+
+    key = os.environ.get("RAPIDAPI_KEY")
+    if not key:
+        print("[skyscanner_hotels] RAPIDAPI_KEY not set — skipping.")
+        return []
+
+    trip = config["trip"]
+    headers = {
+        "x-rapidapi-key": key,
+        "x-rapidapi-host": SKYSCANNER_HOST,
+        "Content-Type": "application/json",
+    }
+    try:
+        resp = requests.get(
+            f"https://{SKYSCANNER_HOST}/api/v1/hotels/searchHotels",
+            headers=headers,
+            params={
+                "entityId": SKYSCANNER_WARSAW_ENTITY_ID,
+                "checkin": trip["dates"]["outbound"],
+                "checkout": trip["dates"]["return"],
+                "adults": str(trip["group_size"]),
+                "rooms": "1",
+                "currency": "EUR",
+                "sorting": "-relevance",
+            },
+            timeout=30,
+        )
+        if resp.status_code >= 400:
+            print(f"[skyscanner_hotels] HTTP {resp.status_code}: {resp.text[:200]}")
+            return []
+        payload = resp.json()
+    except (requests.RequestException, ValueError) as e:
+        print(f"[skyscanner_hotels] call failed: {type(e).__name__}: {e}")
+        return []
+
+    hotels = (payload.get("data") or {}).get("hotels", [])
+    out = []
+    for h in hotels:
+        coords = h.get("coordinates") or [None, None]
+        # Sky-Scrapper returns [lng, lat] — note the order.
+        lng, lat = (coords[0], coords[1]) if len(coords) == 2 else (None, None)
+        rating_obj = h.get("rating") or {}
+        try:
+            rating = float(rating_obj.get("value")) if rating_obj.get("value") else None
+        except (TypeError, ValueError):
+            rating = None
+        out.append(
+            _normalise(
+                {
+                    "hotel_id": f"sk_{h.get('hotelId')}",
+                    "name": h.get("name"),
+                    "price_eur": _coerce_float(h.get("rawPrice")),
+                    "rating": rating,
+                    "lat": lat,
+                    "lng": lng,
+                    "availability": True,
+                    "booking_link": _skyscanner_hotel_link(str(h.get("hotelId")), config),
+                },
+                "skyscanner",
                 config,
             )
         )
@@ -255,20 +357,62 @@ def _mock_data(config: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def fetch_accommodation(config: dict[str, Any], dry_run: bool = False) -> list[dict[str, Any]]:
-    """Return scored, filtered accommodation options for the trip dates."""
-    token = os.environ.get("APIFY_TOKEN")
-    if dry_run or not token:
+    """Return scored, filtered accommodation options for the trip dates.
+
+    Source policy: Apify (Booking / Airbnb) is the PRIMARY data source —
+    inventory matches our budget apartments better. Sky-Scrapper hotels is a
+    FALLBACK, used only when Apify is unavailable (no token, actor failure, or
+    zero results — e.g. monthly compute quota depleted). This keeps daily
+    API spend on a single platform when both are healthy.
+    """
+    if dry_run:
         results = _mock_data(config)
     else:
-        from apify_client import ApifyClient
-
-        client = ApifyClient(token)
         results = []
         sources = config["accommodation"].get("sources", [])
-        if "booking_com" in sources:
-            results += _fetch_booking(client, config)
-        if "airbnb" in sources:
-            results += _fetch_airbnb(client, config)
+        token = os.environ.get("APIFY_TOKEN")
+        apify_attempted = False
+        apify_failed = False
+
+        # ---- Primary: Apify-backed sources ----
+        if token and ("booking_com" in sources or "airbnb" in sources):
+            apify_attempted = True
+            try:
+                from apify_client import ApifyClient
+
+                client = ApifyClient(token)
+                if "booking_com" in sources:
+                    results += _fetch_booking(client, config)
+                if "airbnb" in sources:
+                    results += _fetch_airbnb(client, config)
+            except Exception as e:  # noqa: BLE001 — surface to email, then fall back
+                apify_failed = True
+                msg = f"Apify call failed ({type(e).__name__}: {e}) — falling back to Skyscanner."
+                print(f"[accommodation] {msg}")
+                _LAST_ERRORS.append(msg)
+        elif "booking_com" in sources or "airbnb" in sources:
+            msg = "APIFY_TOKEN missing — falling back to Skyscanner hotels."
+            print(f"[accommodation] {msg}")
+            _LAST_ERRORS.append(msg)
+
+        # ---- Fallback: Sky-Scrapper hotels ----
+        # Trigger when (a) skyscanner is listed AND
+        #   (b) Apify wasn't attempted (no token, or no Apify sources listed),
+        #       OR Apify threw,
+        #       OR Apify returned zero rows (likely quota depleted).
+        if "skyscanner" in sources:
+            apify_empty = apify_attempted and not apify_failed and not results
+            if (not apify_attempted) or apify_failed or apify_empty:
+                if apify_empty:
+                    msg = "Apify returned 0 results (quota likely depleted) — using Skyscanner fallback."
+                    print(f"[accommodation] {msg}")
+                    _LAST_ERRORS.append(msg)
+                results += _fetch_skyscanner_hotels(config)
+
+        # Fall back to mock if every configured source returned nothing AND no live
+        # credentials exist — preserves the old "first run on a laptop" UX.
+        if not results and not token and not os.environ.get("RAPIDAPI_KEY"):
+            results = _mock_data(config)
 
     # Drop options outside the hard distance limit; keep everything else for trend data.
     max_dist = config["accommodation"]["max_distance_km"]

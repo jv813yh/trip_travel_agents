@@ -115,11 +115,24 @@ def build_html(analysis: dict[str, Any], history_df: pd.DataFrame, config: dict[
     transport = analysis["transport"]
     target = config["accommodation"]["target_address"]
     picks = acc["top_picks"]
+    trip = config["trip"]
+    transport_warnings = analysis.get("_transport_warnings") or []
+    accommodation_warnings = analysis.get("_accommodation_warnings") or []
 
     rec_type = transport.get("recommendation")
     rec = next((o for o in transport["options"] if o["type"] == rec_type), None) if rec_type else None
 
     parts: list[str] = ["<div style='font-family:Arial,sans-serif;max-width:640px'>"]
+
+    # Trip header — always show route + dates + pax so the email is self-contained.
+    parts.append(
+        "<div style='background:#eef5fb;padding:10px 14px;border-radius:6px;"
+        "margin-bottom:12px;font-size:14px'>"
+        f"<b>{trip['origin_city']} → {trip['destination_city']}</b> · "
+        f"{trip['dates']['outbound']} → {trip['dates']['return']} · "
+        f"{trip['group_size']} people"
+        "</div>"
+    )
 
     # 0. Critic warning banner (only when invalid)
     critic = analysis.get("_critic") or {}
@@ -142,15 +155,52 @@ def build_html(analysis: dict[str, Any], history_df: pd.DataFrame, config: dict[
             f"group total €{rec.get('total_group_cost_eur')}<br>"
             f"<a href='{rec.get('booking_link')}'>Book →</a></p>"
         )
+    elif transport_warnings:
+        parts.append(
+            "<p style='color:#a00'><b>Transport data unavailable</b> — the upstream APIs "
+            "rejected our request, so we have no live prices for this run:</p>"
+            "<ul style='color:#a00;font-size:13px'>"
+            + "".join(f"<li>{w}</li>" for w in transport_warnings)
+            + "</ul>"
+        )
     else:
         parts.append(
-            "<p style='color:#a00'><b>No transport options available</b> for the configured date "
+            "<p style='color:#a00'><b>No transport options found</b> for the configured date "
             "(or ±1 day). Consider checking manually or adjusting your travel window.</p>"
         )
+
+    # All other transport options sorted by price (so the user sees the market
+    # even when nothing fits the budget).
+    all_options = sorted(
+        [o for o in transport.get("options", []) if o is not rec],
+        key=lambda o: (o.get("price_eur_per_person") or 1e9),
+    )
+    if all_options:
+        parts.append("<details><summary style='cursor:pointer;color:#555;font-size:13px'>"
+                     f"Other options ({len(all_options)})</summary><ul style='font-size:13px'>")
+        for o in all_options:
+            parts.append(
+                f"<li><b>{o.get('carrier')}</b> ({o.get('type')})"
+                f"{_date_badge(o.get('date_offset_days'))} — "
+                f"€{o.get('price_eur_per_person')}/person · "
+                f"{o.get('duration_min')} min · "
+                f"{o.get('departure')}→{o.get('arrival')} · "
+                f"<a href='{o.get('booking_link')}'>Book →</a></li>"
+            )
+        parts.append("</ul></details>")
+
     parts.append(f"<p style='color:#555'>{transport.get('reasoning','')}</p>")
 
     # 2. Accommodation
     parts.append(f"<h2>🏠 Top picks near {target}</h2>")
+    if accommodation_warnings:
+        parts.append(
+            "<div style='background:#fff3cd;color:#856404;padding:8px 12px;"
+            "border-radius:6px;margin-bottom:10px;font-size:13px'>"
+            "<b>ℹ️ Source note:</b><ul style='margin:4px 0 0 18px'>"
+            + "".join(f"<li>{w}</li>" for w in accommodation_warnings)
+            + "</ul></div>"
+        )
     parts.append(
         "<p style='color:#777;font-size:12px;margin-top:-8px'>"
         "Match score is out of 100: price (40 pts) + rating (35 pts) + "
