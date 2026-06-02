@@ -31,34 +31,45 @@ from utils.distance import distance_km  # noqa: E402
 from utils.scorer import composite_score  # noqa: E402
 
 
+def _merge_query(url: str, overrides: dict[str, Any]) -> str:
+    """Return `url` with `overrides` merged into its query string.
+
+    Keys in `overrides` REPLACE any existing values; other params are kept.
+    Prevents `?checkin=A&checkin=B` when the source URL already carries
+    these keys (Apify's Booking actor sometimes does).
+    """
+    parts = _u.urlsplit(url)
+    kept = [(k, v) for k, v in _u.parse_qsl(parts.query, keep_blank_values=True)
+            if k not in overrides]
+    merged = kept + [(k, str(v)) for k, v in overrides.items()]
+    return _u.urlunsplit((parts.scheme, parts.netloc, parts.path,
+                          _u.urlencode(merged), parts.fragment))
+
+
 def _booking_deep_link(url: str | None, config: dict[str, Any]) -> str | None:
-    """Append checkin/checkout/group params to a Booking.com hotel URL."""
+    """Set checkin/checkout/group params on a Booking.com hotel URL."""
     if not url or "booking.com" not in url:
         return url
     trip = config["trip"]
-    extra = {
+    return _merge_query(url, {
         "checkin": trip["dates"]["outbound"],
         "checkout": trip["dates"]["return"],
         "group_adults": trip["group_size"],
         "no_rooms": 1,
         "group_children": 0,
-    }
-    sep = "&" if "?" in url else "?"
-    return f"{url}{sep}{_u.urlencode(extra)}"
+    })
 
 
 def _airbnb_deep_link(url: str | None, config: dict[str, Any]) -> str | None:
-    """Append checkin/checkout/guests params to an Airbnb listing URL."""
+    """Set checkin/checkout/guests params on an Airbnb listing URL."""
     if not url or "airbnb." not in url:
         return url
     trip = config["trip"]
-    extra = {
+    return _merge_query(url, {
         "check_in": trip["dates"]["outbound"],
         "check_out": trip["dates"]["return"],
         "adults": trip["group_size"],
-    }
-    sep = "&" if "?" in url else "?"
-    return f"{url}{sep}{_u.urlencode(extra)}"
+    })
 
 BOOKING_ACTOR = "voyager/booking-scraper"
 AIRBNB_ACTOR = "tri_angle/airbnb-scraper"

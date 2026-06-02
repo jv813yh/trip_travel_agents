@@ -69,7 +69,10 @@ def _normalise(raw: dict[str, Any], date: str, idx: int, offset: int, adults: in
     }
 
 
-def _query(date: str, adults: int) -> list[dict[str, Any]]:
+def _query(date: str) -> list[dict[str, Any]]:
+    """Query FlixBus for one date. Always uses adult=1 so the returned
+    price.total is a stable per-person quote; group size is handled by the
+    booking deep link, not the price."""
     import requests
 
     key = os.environ["RAPIDAPI_KEY"]
@@ -81,7 +84,7 @@ def _query(date: str, adults: int) -> list[dict[str, Any]]:
                 "from_city_id": KOSICE_CITY_ID,
                 "to_city_id": WARSAW_CITY_ID,
                 "departure_date": date,
-                "adult": str(adults),
+                "adult": "1",
                 "currency": "EUR",
             },
             timeout=30,
@@ -112,16 +115,19 @@ def _query(date: str, adults: int) -> list[dict[str, Any]]:
 
 def _fetch_live(config: dict[str, Any]) -> list[dict[str, Any]]:
     base_date = dt.date.fromisoformat(config["trip"]["dates"]["outbound"])
-    adults = config["trip"]["group_size"]
-    results: list[dict[str, Any]] = []
+    link_adults = config["trip"]["group_size"]  # only used in the booking URL
+    # Try the configured date first; widen by one day and return at the
+    # first offset that yields anything (saves API calls vs accumulating).
     for offset in (0, -1, 1):
         date_iso = (base_date + dt.timedelta(days=offset)).isoformat()
-        raw_items = _query(date_iso, adults)
-        for idx, raw in enumerate(raw_items):
-            results.append(_normalise(raw, date_iso, idx, offset, adults))
-        if offset == 0 and results:
-            return results
-    return results
+        raw_items = _query(date_iso)
+        batch = [
+            _normalise(raw, date_iso, idx, offset, link_adults)
+            for idx, raw in enumerate(raw_items)
+        ]
+        if batch:
+            return batch
+    return []
 
 
 def _mock_data(config: dict[str, Any]) -> list[dict[str, Any]]:

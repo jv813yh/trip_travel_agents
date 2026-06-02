@@ -273,8 +273,27 @@ class SheetsWriter:
                     }
                 })
 
-        # 4. Banded rows (alternating background) for data area
+        # 4. Autofilter over header row (idempotent: setBasicFilter replaces any existing filter)
         requests.append({
+            "setBasicFilter": {
+                "filter": {
+                    "range": {
+                        "sheetId": ws.id,
+                        "startRowIndex": 0,
+                        "startColumnIndex": 0,
+                        "endColumnIndex": n_cols,
+                    }
+                }
+            }
+        })
+
+        # Apply the idempotent batch first.
+        self._batch_update(requests)
+
+        # 5. Banded rows: separate best-effort call. Google rejects addBanding
+        # when a banded range already exists on this sheet — that's fine,
+        # the existing banding is what we wanted anyway.
+        banding_req = [{
             "addBanding": {
                 "bandedRange": {
                     "range": {
@@ -291,28 +310,15 @@ class SheetsWriter:
                     },
                 }
             }
-        })
-
-        # 5. Autofilter over header row
-        requests.append({
-            "setBasicFilter": {
-                "filter": {
-                    "range": {
-                        "sheetId": ws.id,
-                        "startRowIndex": 0,
-                        "startColumnIndex": 0,
-                        "endColumnIndex": n_cols,
-                    }
-                }
-            }
-        })
-
+        }]
         try:
-            self._batch_update(requests)
+            self._batch_update(banding_req)
         except Exception as exc:  # noqa: BLE001
-            # Banding fails if already present — try once more without it.
-            print(f"[sheets] retrying format without banding: {exc}")
-            self._batch_update([r for r in requests if "addBanding" not in r])
+            msg = str(exc).lower()
+            if "banded" in msg or "already" in msg or "overlap" in msg:
+                pass  # banding already present — fine
+            else:
+                print(f"[sheets] banding skipped: {exc}")
 
     def _batch_update(self, requests: list[dict[str, Any]]) -> None:
         self._spreadsheet.batch_update({"requests": requests})

@@ -22,6 +22,8 @@ from typing import Any
 
 import pandas as pd
 
+from utils.scorer import normalise_rating
+
 SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
 _PREVIEW_PATH = Path(__file__).resolve().parent / "_last_digest.html"
 
@@ -60,8 +62,16 @@ def _trend_chart_b64(history_df: pd.DataFrame, top_picks: list[dict[str, Any]]) 
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-def _score_breakdown(price: float, rating: float, distance_km: float, config: dict[str, Any]) -> str:
-    """Return a one-line explanation of the composite score components."""
+def _score_breakdown(
+    price: float, rating: float, distance_km: float,
+    config: dict[str, Any], source: str = "booking_com",
+) -> str:
+    """Return a one-line explanation of the composite score components.
+
+    `source` is needed so Airbnb's 0–5 ratings are normalised onto the 0–10
+    scale before scoring (matches `utils.scorer.composite_score`). Without
+    this an Airbnb 4.87/5 would show as "good" instead of "excellent".
+    """
     acc_cfg = config["accommodation"]
     budget = acc_cfg["max_price_per_night_eur"]
     max_dist = acc_cfg["max_distance_km"]
@@ -75,7 +85,8 @@ def _score_breakdown(price: float, rating: float, distance_km: float, config: di
         return ranges[-1][1]
 
     price_pts = max(0, 40 * (1 - (price - min_price) / (budget - min_price))) if price else 0
-    rating_pts = (rating / 10) * 35 if rating else 0
+    rating_10 = normalise_rating(rating, source) if rating else 0
+    rating_pts = (rating_10 / 10) * 35 if rating_10 else 0
     dist_pts = max(0, 25 * (1 - (distance_km or 0) / max_dist))
 
     price_label = label(price_pts, 40, [(75, "great price"), (50, "good price"), (25, "ok price"), (0, "over budget")])
@@ -155,6 +166,7 @@ def build_html(analysis: dict[str, Any], history_df: pd.DataFrame, config: dict[
             p.get("rating") or 0,
             p.get("distance_km") or 0,
             config,
+            source=p.get("source", "booking_com"),
         )
         parts.append(
             f"<p><b>#{p['rank']} {p['name']}</b>{alert_badge}<br>"

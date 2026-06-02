@@ -76,8 +76,12 @@ def _normalise(raw: dict[str, Any], origin: str, dest: str, date: str, offset: i
     }
 
 
-def _query_skyscanner(origin: str, dest: str, date: str, adults: int, max_stops: int) -> list[dict[str, Any]]:
-    """Return raw flight items (unnormalised) for a single OD pair + date."""
+def _query_skyscanner(origin: str, dest: str, date: str, max_stops: int) -> list[dict[str, Any]]:
+    """Return raw flight items (unnormalised) for a single OD pair + date.
+
+    Always queries with adults=1 to get a stable per-person price; the group
+    size only affects the deep link, not the priced quote.
+    """
     import requests
 
     key = os.environ["RAPIDAPI_KEY"]
@@ -88,7 +92,7 @@ def _query_skyscanner(origin: str, dest: str, date: str, adults: int, max_stops:
             headers=headers,
             params={
                 "origin": origin, "destination": dest, "date": date,
-                "adults": str(adults), "currency": "EUR",
+                "adults": "1", "currency": "EUR",
             },
             timeout=30,
         )
@@ -119,21 +123,21 @@ def _fetch_live(config: dict[str, Any]) -> list[dict[str, Any]]:
     trip = config["trip"]
     origin = trip["origin_airport"]
     base_date = dt.date.fromisoformat(trip["dates"]["outbound"])
-    adults = trip["group_size"]
+    link_adults = trip["group_size"]      # used only when building booking URLs
     max_stops = config["transport"]["max_layovers"]
     dests = [trip["destination_airport"], "WMI"]
 
-    # Search the target date first; only widen to ±1 day if nothing found.
-    results: list[dict[str, Any]] = []
+    # Try the configured date first; widen by one day at a time and return at the
+    # first offset that yields anything. Bounds API calls at 2/4/6 instead of always 6.
     for offset in (0, -1, 1):
         date_iso = (base_date + dt.timedelta(days=offset)).isoformat()
+        batch: list[dict[str, Any]] = []
         for dest in dests:
-            raw_items = _query_skyscanner(origin, dest, date_iso, adults, max_stops)
-            for raw in raw_items:
-                results.append(_normalise(raw, origin, dest, date_iso, offset, adults))
-        if offset == 0 and results:
-            return results   # exact-date hits — no need to widen
-    return results
+            for raw in _query_skyscanner(origin, dest, date_iso, max_stops):
+                batch.append(_normalise(raw, origin, dest, date_iso, offset, link_adults))
+        if batch:
+            return batch
+    return []
 
 
 def _mock_data(config: dict[str, Any]) -> list[dict[str, Any]]:
