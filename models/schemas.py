@@ -44,7 +44,6 @@ class TopPick(BaseModel):
     coordinates: Coordinates = Field(default_factory=Coordinates)
     rooms: Optional[int] = Field(default=None, ge=1)
     total_group_cost_eur: Optional[float] = Field(default=None, ge=0)
-    price_basis: Optional[str] = None
 
 
 class PriceAlert(BaseModel):

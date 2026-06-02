@@ -40,7 +40,7 @@ COLUMNS = {
         ("hotel_id", "text", 110),
         ("source", "text", 100),
         ("name", "text", 260),
-        ("price_eur", "eur", 95),
+        ("price_per_person_per_night_eur", "eur", 135),
         ("rating", "number", 70),
         ("lat", "number", 90),
         ("lng", "number", 90),
@@ -50,7 +50,7 @@ COLUMNS = {
         ("composite_score", "number", 110),
         ("rooms", "integer", 70),
         ("total_group_cost_eur", "eur", 135),
-        ("price_basis", "text", 180),
+        ("price_per_person_total_stay_eur", "eur", 155),
     ],
     "transport_raw": [
         ("date", "date", 90),
@@ -69,7 +69,7 @@ COLUMNS = {
         ("rank", "integer", 60),
         ("type", "text", 110),
         ("name", "text", 260),
-        ("price_eur", "eur", 95),
+        ("price_per_person_per_night_eur", "eur", 135),
         ("composite_score", "number", 130),
         ("vs_yesterday_pct", "percent", 130),
         ("vs_7d_avg_pct", "percent", 130),
@@ -78,7 +78,7 @@ COLUMNS = {
         ("hotel_id", "text", 110),
         ("rooms", "integer", 70),
         ("total_group_cost_eur", "eur", 135),
-        ("price_basis", "text", 180),
+        ("price_per_person_total_stay_eur", "eur", 155),
     ],
     "accommodation_stats": [
         ("hotel_id", "text", 120),
@@ -91,10 +91,10 @@ COLUMNS = {
         ("rank1_count", "integer", 100),
         ("first_recommended", "date", 130),
         ("last_recommended", "date", 130),
-        ("latest_price", "eur", 100),
-        ("min_price", "eur", 95),
-        ("max_price", "eur", 95),
-        ("avg_price", "eur", 95),
+        ("latest_price_per_person_per_night", "eur", 150),
+        ("min_price_per_person_per_night", "eur", 145),
+        ("max_price_per_person_per_night", "eur", 145),
+        ("avg_price_per_person_per_night", "eur", 145),
         ("latest_score", "number", 105),
         ("latest_distance_km", "number", 130),
         ("price_trend", "text", 110),
@@ -185,12 +185,27 @@ def _price_trend(prices: list[float]) -> str:
     return "stable"
 
 
+def _with_price_aliases(df: pd.DataFrame) -> pd.DataFrame:
+    """Keep old/new sheet price headers readable by existing code."""
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    for alias in ("price_per_person_per_night_eur", "price_eur_per_person_per_night"):
+        if "price_eur" not in out and alias in out:
+            out["price_eur"] = out[alias]
+    if "price_eur_per_person_per_night" not in out and "price_eur" in out:
+        out["price_eur_per_person_per_night"] = out["price_eur"]
+    if "price_per_person_per_night_eur" not in out and "price_eur" in out:
+        out["price_per_person_per_night_eur"] = out["price_eur"]
+    return out
+
+
 def _build_accommodation_stats(acc_df: pd.DataFrame, top_df: pd.DataFrame) -> list[list[Any]]:
     """Summarise accommodation history + recommendation frequency."""
     if acc_df is None or acc_df.empty:
         return []
 
-    acc = acc_df.copy()
+    acc = _with_price_aliases(acc_df)
     for col in ("price_eur", "composite_score", "distance_km"):
         if col in acc:
             acc[col] = _to_number(acc[col])
@@ -500,12 +515,15 @@ class SheetsWriter:
         ws.append_rows(rows, value_input_option="USER_ENTERED")
 
     def write_accommodation(self, run_date: str, options: list[dict[str, Any]]) -> None:
+        group_size = max(1, int(self.config["trip"]["group_size"]))
         rows = [
             [
                 run_date, o["hotel_id"], o["source"], o["name"], o["price_eur"],
                 o["rating"], o["lat"], o["lng"], o["distance_km"],
                 o.get("availability", True), o["booking_link"], o.get("composite_score"),
-                o.get("rooms"), o.get("total_group_cost_eur"), o.get("price_basis"),
+                o.get("rooms"), o.get("total_group_cost_eur"),
+                round(o["total_group_cost_eur"] / group_size, 2)
+                if o.get("total_group_cost_eur") is not None else None,
             ]
             for o in options
         ]
@@ -523,6 +541,7 @@ class SheetsWriter:
         self._append("transport_raw", rows)
 
     def write_daily_top2(self, run_date: str, analysis: dict[str, Any]) -> None:
+        group_size = max(1, int(self.config["trip"]["group_size"]))
         rows = []
         for pick in analysis["accommodation"]["top_picks"]:
             # Store percent as a decimal so the % format works correctly (e.g. -0.112 -> -11.2%)
@@ -538,7 +557,8 @@ class SheetsWriter:
                     pick.get("hotel_id"),
                     pick.get("rooms"),
                     pick.get("total_group_cost_eur"),
-                    pick.get("price_basis"),
+                    round(pick["total_group_cost_eur"] / group_size, 2)
+                    if pick.get("total_group_cost_eur") is not None else None,
                 ]
             )
         self._append("daily_top2", rows)
@@ -589,5 +609,6 @@ class SheetsWriter:
             return pd.DataFrame(columns=WORKSHEETS["accommodation_raw"])
         df = self._read_worksheet("accommodation_raw")
         if not df.empty:
+            df = _with_price_aliases(df)
             df["price_eur"] = pd.to_numeric(df["price_eur"], errors="coerce")
         return df

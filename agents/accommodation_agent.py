@@ -113,7 +113,6 @@ def _normalise(raw: dict[str, Any], source: str, config: dict[str, Any]) -> dict
         "booking_link": raw.get("booking_link"),
         "rooms": raw.get("rooms"),
         "total_group_cost_eur": raw.get("total_group_cost_eur"),
-        "price_basis": raw.get("price_basis"),
     }
     record["composite_score"] = (
         composite_score(price, rating, dist, config, source)
@@ -435,13 +434,11 @@ def _normalise_accommodation_price(
     observed price should cover the returned offer. If a source only returns a
     one-room price and also tells us the room count, pass price_covers_all_rooms=False.
     """
-    basis = "eur_per_person_per_night"
     if raw_price is None:
         return {
             "price_eur": None,
             "rooms": rooms,
             "total_group_cost_eur": None,
-            "price_basis": basis,
         }
 
     acc = config["accommodation"]
@@ -462,7 +459,6 @@ def _normalise_accommodation_price(
         "price_eur": round(per_person_per_night, 2),
         "rooms": rooms,
         "total_group_cost_eur": round(total_group_cost, 2),
-        "price_basis": basis,
     }
 
 
@@ -498,7 +494,6 @@ def _mock_data(config: dict[str, Any]) -> list[dict[str, Any]]:
     ]
     for item in raw:
         item["total_group_cost_eur"] = round(item["price_eur"] * group_size * nights, 2)
-        item["price_basis"] = "eur_per_person_per_night"
     return [
         _normalise(r, "airbnb" if r["hotel_id"].startswith("ab_") else "booking_com", config)
         for r in raw

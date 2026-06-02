@@ -60,7 +60,6 @@ OUTPUT_SCHEMA_HINT = {
                 "coordinates": {"lat": 0, "lng": 0},
                 "rooms": 1,
                 "total_group_cost_eur": 0,
-                "price_basis": "eur_per_person_per_night",
             }
         ],
         "alerts": [],
@@ -189,7 +188,6 @@ def _analyse_deterministic(
                 "coordinates": {"lat": a.get("lat"), "lng": a.get("lng")},
                 "rooms": a.get("rooms"),
                 "total_group_cost_eur": a.get("total_group_cost_eur"),
-                "price_basis": a.get("price_basis"),
             }
         )
 
