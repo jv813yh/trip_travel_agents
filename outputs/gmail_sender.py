@@ -129,6 +129,48 @@ def _stops_text(option: dict[str, Any]) -> str:
     return f" · {stops} stop{'s' if stops != 1 else ''}, verify itinerary"
 
 
+def _duration_text(minutes: int | None) -> str:
+    if minutes is None:
+        return "unknown duration"
+    hours, mins = divmod(int(minutes), 60)
+    if hours and mins:
+        return f"{hours}h {mins}m"
+    if hours:
+        return f"{hours}h"
+    return f"{mins}m"
+
+
+def _best_transport(options: list[dict[str, Any]], transport_type: str) -> dict[str, Any] | None:
+    typed = [
+        o for o in options
+        if o.get("type") == transport_type and o.get("price_eur_per_person") is not None
+    ]
+    if not typed:
+        return None
+    return min(typed, key=lambda o: (o.get("price_eur_per_person") or 1e9, o.get("duration_min") or 1e9))
+
+
+def _transport_card(option: dict[str, Any], title: str, recommended: bool = False) -> str:
+    badge = (
+        " <span style='background:#d1e7dd;color:#0f5132;padding:2px 6px;"
+        "border-radius:4px;font-size:12px'>recommended</span>"
+        if recommended else ""
+    )
+    price = option.get("price_eur_per_person")
+    total = option.get("total_group_cost_eur")
+    return (
+        "<div style='border:1px solid #dde3ea;border-radius:6px;padding:10px 12px;"
+        "margin:8px 0;background:#fff'>"
+        f"<b>{title}: {option.get('carrier')}</b>{badge}{_date_badge(option.get('date_offset_days'))}<br>"
+        f"€{price}/person"
+        + (f" · group total €{total}" if total is not None else "")
+        + f" · {_duration_text(option.get('duration_min'))}"
+        + f" · {option.get('departure')}→{option.get('arrival')}{_stops_text(option)}<br>"
+        f"<a href='{option.get('booking_link')}'>{_transport_link_label(option)}</a>"
+        "</div>"
+    )
+
+
 def build_html(analysis: dict[str, Any], history_df: pd.DataFrame, config: dict[str, Any]) -> str:
     acc = analysis["accommodation"]
     transport = analysis["transport"]
@@ -141,6 +183,8 @@ def build_html(analysis: dict[str, Any], history_df: pd.DataFrame, config: dict[
 
     rec_type = transport.get("recommendation")
     rec = next((o for o in transport["options"] if o["type"] == rec_type), None) if rec_type else None
+    best_flight = _best_transport(transport.get("options", []), "flight")
+    best_flixbus = _best_transport(transport.get("options", []), "flixbus")
 
     parts: list[str] = ["<div style='font-family:Arial,sans-serif;max-width:640px'>"]
 
@@ -152,7 +196,7 @@ def build_html(analysis: dict[str, Any], history_df: pd.DataFrame, config: dict[
         f"{trip['dates']['outbound']} → {trip['dates']['return']} · "
         f"{trip['group_size']} people"
         + (
-            f"<br><a href='{spreadsheet_url}' style='color:#0b57d0'>Open tracking sheet →</a>"
+            f"<br><a href='{spreadsheet_url}' style='color:#0b57d0'>Open tracking sheet + accommodation stats →</a>"
             if spreadsheet_url else ""
         )
         + "</div>"
@@ -171,14 +215,21 @@ def build_html(analysis: dict[str, Any], history_df: pd.DataFrame, config: dict[
 
     # 1. Transport
     parts.append("<h2>🚆 Transport recommendation</h2>")
-    if rec:
-        parts.append(
-            f"<p><b>{rec['carrier']}</b> ({rec['type']}){_date_badge(rec.get('date_offset_days'))} — "
-            f"€{rec['price_eur_per_person']}/person · {rec.get('duration_min')} min · "
-            f"{rec.get('departure')}→{rec.get('arrival')} · "
-            f"group total €{rec.get('total_group_cost_eur')}{_stops_text(rec)}<br>"
-            f"<a href='{rec.get('booking_link')}'>{_transport_link_label(rec)}</a></p>"
-        )
+    if best_flight or best_flixbus:
+        if best_flight:
+            parts.append(_transport_card(best_flight, "Best flight", rec_type == "flight"))
+        else:
+            parts.append(
+                "<div style='border:1px solid #f5c2c7;border-radius:6px;padding:10px 12px;"
+                "margin:8px 0;background:#fff5f5'><b>Best flight:</b> no flight data found today.</div>"
+            )
+        if best_flixbus:
+            parts.append(_transport_card(best_flixbus, "Best FlixBus", rec_type == "flixbus"))
+        else:
+            parts.append(
+                "<div style='border:1px solid #f5c2c7;border-radius:6px;padding:10px 12px;"
+                "margin:8px 0;background:#fff5f5'><b>Best FlixBus:</b> no FlixBus data found today.</div>"
+            )
     elif transport_warnings:
         parts.append(
             "<p style='color:#a00'><b>Transport data unavailable</b> — the upstream APIs "
@@ -193,10 +244,13 @@ def build_html(analysis: dict[str, Any], history_df: pd.DataFrame, config: dict[
             "(or ±1 day). Consider checking manually or adjusting your travel window.</p>"
         )
 
-    # All other transport options sorted by price (so the user sees the market
-    # even when nothing fits the budget).
+    # Additional transport options sorted by price (so the user sees the market
+    # without duplicating the main flight / FlixBus comparison cards).
     all_options = sorted(
-        [o for o in transport.get("options", []) if o is not rec],
+        [
+            o for o in transport.get("options", [])
+            if o is not best_flight and o is not best_flixbus
+        ],
         key=lambda o: (o.get("price_eur_per_person") or 1e9),
     )
     if all_options:

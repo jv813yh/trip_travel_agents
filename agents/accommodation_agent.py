@@ -83,7 +83,7 @@ def _airbnb_deep_link(url: str | None, config: dict[str, Any]) -> str | None:
     })
 
 BOOKING_ACTOR = "voyager/booking-scraper"
-AIRBNB_ACTOR = "tri_angle/airbnb-scraper"
+AIRBNB_ACTOR = "trakk/airbnb-scraper"
 
 # Sky-Scrapper hotels — resolved once via /hotels/searchDestinationOrHotel.
 # Refresh if the city changes.
@@ -97,7 +97,7 @@ def _normalise(raw: dict[str, Any], source: str, config: dict[str, Any]) -> dict
     lng = _coerce_float(raw.get("lng"))
     dist = distance_km(lat, lng, config) if lat is not None and lng is not None else None
     price = raw.get("price_eur")
-    rating = raw.get("rating")
+    rating = _coerce_rating(raw.get("rating"))
 
     record = {
         "hotel_id": raw["hotel_id"],
@@ -187,7 +187,9 @@ def _fetch_skyscanner_hotels(config: dict[str, Any]) -> list[dict[str, Any]]:
 
     key = os.environ.get("RAPIDAPI_KEY")
     if not key:
-        print("[skyscanner_hotels] RAPIDAPI_KEY not set — skipping.")
+        msg = "RAPIDAPI_KEY not set — skipping Skyscanner hotels."
+        print(f"[skyscanner_hotels] {msg}")
+        _LAST_ERRORS.append(msg)
         return []
 
     trip = config["trip"]
@@ -212,11 +214,15 @@ def _fetch_skyscanner_hotels(config: dict[str, Any]) -> list[dict[str, Any]]:
             timeout=30,
         )
         if resp.status_code >= 400:
-            print(f"[skyscanner_hotels] HTTP {resp.status_code}: {resp.text[:200]}")
+            msg = f"Skyscanner hotels HTTP {resp.status_code}: {resp.text[:200]}"
+            print(f"[skyscanner_hotels] {msg}")
+            _LAST_ERRORS.append(msg)
             return []
         payload = resp.json()
     except (requests.RequestException, ValueError) as e:
-        print(f"[skyscanner_hotels] call failed: {type(e).__name__}: {e}")
+        msg = f"Skyscanner hotels call failed: {type(e).__name__}: {e}"
+        print(f"[skyscanner_hotels] {msg}")
+        _LAST_ERRORS.append(msg)
         return []
 
     hotels = (payload.get("data") or {}).get("hotels", [])
@@ -251,28 +257,36 @@ def _fetch_skyscanner_hotels(config: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _fetch_airbnb(client: Any, config: dict[str, Any]) -> list[dict[str, Any]]:
     trip = config["trip"]
+    acc = config["accommodation"]
     run_input = {
-        "locationQuery": trip["destination_city"],
+        "mode": "search-fast",
+        "locationQueries": [acc.get("target_address") or trip["destination_city"]],
         "checkIn": trip["dates"]["outbound"],
         "checkOut": trip["dates"]["return"],
         "currency": "EUR",
         "adults": trip["group_size"],
-        "maxItems": 10,
+        "maxPrice": int(acc["max_price_per_night_eur"] * 2),
+        "minBeds": trip["group_size"],
+        "roomType": "Entire home/apt",
+        "maxItemsPerQuery": 30,
+        "locale": "en",
     }
     items = _run_actor(client, AIRBNB_ACTOR, run_input)
     out = []
     for it in items:
+        coords = it.get("coordinates") or {}
+        price = it.get("price") or it.get("pricing")
+        if isinstance(coords, list) and len(coords) == 2:
+            coords = {"lng": coords[0], "lat": coords[1]}
         out.append(
             _normalise(
                 {
                     "hotel_id": f"ab_{it.get('id')}",
                     "name": it.get("name") or it.get("title"),
-                    "price_eur": _to_per_night(
-                        _coerce_price(it.get("price") or it.get("pricing")), config
-                    ),
+                    "price_eur": _to_per_night(_coerce_price(price), config),
                     "rating": it.get("rating") or it.get("stars"),
-                    "lat": it.get("lat") or (it.get("coordinates") or {}).get("latitude"),
-                    "lng": it.get("lng") or (it.get("coordinates") or {}).get("longitude"),
+                    "lat": it.get("lat") or coords.get("latitude") or coords.get("lat"),
+                    "lng": it.get("lng") or coords.get("longitude") or coords.get("lng"),
                     "availability": True,
                     "booking_link": _airbnb_deep_link(it.get("url"), config),
                 },
@@ -292,6 +306,29 @@ def _coerce_float(value: Any) -> float | None:
         return None
 
 
+def _coerce_rating(value: Any) -> float | None:
+    """Extract a numeric rating from provider-specific rating objects."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, dict):
+        for key in ("value", "rating", "score", "guestSatisfactionOverall"):
+            if key in value:
+                parsed = _coerce_rating(value[key])
+                if parsed is not None:
+                    return parsed
+        for item in value.values():
+            parsed = _coerce_rating(item)
+            if parsed is not None:
+                return parsed
+        return None
+    try:
+        return float(str(value).split()[0])
+    except (TypeError, ValueError):
+        return None
+
+
 def _coerce_price(value: Any) -> float | None:
     """Best-effort extraction of a numeric EUR price (raw, undecided units)."""
     if value is None:
@@ -300,12 +337,16 @@ def _coerce_price(value: Any) -> float | None:
         return float(value)
     if isinstance(value, dict):
         # Per-night keys win — they are unambiguous.
-        for key in ("perNight", "pricePerNight", "price_per_night", "nightly"):
+        for key in ("perNight", "pricePerNight", "price_per_night", "nightly", "unit", "rate"):
             if key in value:
                 return _coerce_price(value[key])
-        for key in ("amount", "value", "total", "grossPrice"):
+        for key in ("amount", "value", "total", "grossPrice", "price", "primary"):
             if key in value:
                 return _coerce_price(value[key])
+        for item in value.values():
+            parsed = _coerce_price(item)
+            if parsed is not None:
+                return parsed
         return None
     # strings like "€72" or "72.00 EUR"
     digits = "".join(c for c in str(value) if c.isdigit() or c == ".")
@@ -356,14 +397,42 @@ def _mock_data(config: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _dedupe_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Best-effort de-dupe across providers by exact id/link/name+distance.
+
+    Same properties can appear through Booking.com and Skyscanner. Keep the
+    row with the lower price; break ties by composite score.
+    """
+    deduped: dict[str, dict[str, Any]] = {}
+    for item in results:
+        name = (item.get("name") or "").casefold().strip()
+        dist = item.get("distance_km")
+        dist_bucket = round(float(dist), 1) if dist is not None else "na"
+        key = item.get("booking_link") or f"{name}|{dist_bucket}"
+        current = deduped.get(key)
+        if current is None:
+            deduped[key] = item
+            continue
+        item_price = item.get("price_eur")
+        current_price = current.get("price_eur")
+        if current_price is None or (
+            item_price is not None and item_price < current_price
+        ):
+            deduped[key] = item
+        elif item_price == current_price and (
+            (item.get("composite_score") or 0) > (current.get("composite_score") or 0)
+        ):
+            deduped[key] = item
+    return list(deduped.values())
+
+
 def fetch_accommodation(config: dict[str, Any], dry_run: bool = False) -> list[dict[str, Any]]:
     """Return scored, filtered accommodation options for the trip dates.
 
-    Source policy: Apify (Booking / Airbnb) is the PRIMARY data source —
-    inventory matches our budget apartments better. Sky-Scrapper hotels is a
-    FALLBACK, used only when Apify is unavailable (no token, actor failure, or
-    zero results — e.g. monthly compute quota depleted). This keeps daily
-    API spend on a single platform when both are healthy.
+    Every configured source is queried. Booking.com and Airbnb use Apify
+    actors; Skyscanner hotels uses RapidAPI and broadens the market with hotel
+    aggregators. If all live providers are unavailable, local runs without
+    credentials still fall back to deterministic mock data.
     """
     if dry_run:
         results = _mock_data(config)
@@ -371,48 +440,60 @@ def fetch_accommodation(config: dict[str, Any], dry_run: bool = False) -> list[d
         results = []
         sources = config["accommodation"].get("sources", [])
         token = os.environ.get("APIFY_TOKEN")
-        apify_attempted = False
-        apify_failed = False
 
-        # ---- Primary: Apify-backed sources ----
+        # ---- Apify-backed sources ----
         if token and ("booking_com" in sources or "airbnb" in sources):
-            apify_attempted = True
             try:
                 from apify_client import ApifyClient
 
                 client = ApifyClient(token)
                 if "booking_com" in sources:
-                    results += _fetch_booking(client, config)
+                    try:
+                        booking_results = _fetch_booking(client, config)
+                        if booking_results:
+                            results += booking_results
+                        else:
+                            _LAST_ERRORS.append("Booking.com Apify returned 0 rows.")
+                    except Exception as e:  # noqa: BLE001
+                        msg = f"Booking.com Apify call failed ({type(e).__name__}: {e})."
+                        print(f"[accommodation] {msg}")
+                        _LAST_ERRORS.append(msg)
                 if "airbnb" in sources:
-                    results += _fetch_airbnb(client, config)
-            except Exception as e:  # noqa: BLE001 — surface to email, then fall back
-                apify_failed = True
-                msg = f"Apify call failed ({type(e).__name__}: {e}) — falling back to Skyscanner."
+                    try:
+                        airbnb_results = _fetch_airbnb(client, config)
+                        if airbnb_results:
+                            results += airbnb_results
+                        else:
+                            _LAST_ERRORS.append("Airbnb Apify returned 0 rows.")
+                    except Exception as e:  # noqa: BLE001
+                        msg = f"Airbnb Apify call failed ({type(e).__name__}: {e})."
+                        print(f"[accommodation] {msg}")
+                        _LAST_ERRORS.append(msg)
+            except Exception as e:  # noqa: BLE001
+                msg = f"Apify client failed ({type(e).__name__}: {e})."
                 print(f"[accommodation] {msg}")
                 _LAST_ERRORS.append(msg)
         elif "booking_com" in sources or "airbnb" in sources:
-            msg = "APIFY_TOKEN missing — falling back to Skyscanner hotels."
+            msg = "APIFY_TOKEN missing — skipping Booking.com/Airbnb Apify sources."
             print(f"[accommodation] {msg}")
             _LAST_ERRORS.append(msg)
 
-        # ---- Fallback: Sky-Scrapper hotels ----
-        # Trigger when (a) skyscanner is listed AND
-        #   (b) Apify wasn't attempted (no token, or no Apify sources listed),
-        #       OR Apify threw,
-        #       OR Apify returned zero rows (likely quota depleted).
+        # ---- Aggregator source ----
         if "skyscanner" in sources:
-            apify_empty = apify_attempted and not apify_failed and not results
-            if (not apify_attempted) or apify_failed or apify_empty:
-                if apify_empty:
-                    msg = "Apify returned 0 results (quota likely depleted) — using Skyscanner fallback."
-                    print(f"[accommodation] {msg}")
-                    _LAST_ERRORS.append(msg)
-                results += _fetch_skyscanner_hotels(config)
+            sky_results = _fetch_skyscanner_hotels(config)
+            if sky_results:
+                results += sky_results
+            elif not os.environ.get("RAPIDAPI_KEY"):
+                _LAST_ERRORS.append("RAPIDAPI_KEY missing — skipping Skyscanner hotels.")
+            else:
+                _LAST_ERRORS.append("Skyscanner hotels returned 0 rows.")
 
         # Fall back to mock if every configured source returned nothing AND no live
         # credentials exist — preserves the old "first run on a laptop" UX.
         if not results and not token and not os.environ.get("RAPIDAPI_KEY"):
             results = _mock_data(config)
+
+    results = _dedupe_results(results)
 
     # Drop options outside the hard distance limit; keep everything else for trend data.
     max_dist = config["accommodation"]["max_distance_km"]

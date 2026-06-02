@@ -72,6 +72,30 @@ COLUMNS = {
         ("vs_7d_avg_pct", "percent", 130),
         ("alert_triggered", "bool", 110),
         ("link", "link", 220),
+        ("hotel_id", "text", 110),
+    ],
+    "accommodation_stats": [
+        ("hotel_id", "text", 120),
+        ("source", "text", 100),
+        ("name", "text", 260),
+        ("first_seen", "date", 95),
+        ("last_seen", "date", 95),
+        ("days_seen", "integer", 90),
+        ("recommended_count", "integer", 145),
+        ("rank1_count", "integer", 100),
+        ("first_recommended", "date", 130),
+        ("last_recommended", "date", 130),
+        ("latest_price", "eur", 100),
+        ("min_price", "eur", 95),
+        ("max_price", "eur", 95),
+        ("avg_price", "eur", 95),
+        ("latest_score", "number", 105),
+        ("latest_distance_km", "number", 130),
+        ("price_trend", "text", 110),
+        ("latest_vs_first_pct", "percent", 135),
+        ("latest_vs_7d_avg_pct", "percent", 145),
+        ("price_history", "text", 360),
+        ("link", "link", 220),
     ],
     "alerts_log": [
         ("timestamp", "datetime", 140),
@@ -126,6 +150,122 @@ def _col_letter(idx: int) -> str:
             return s
 
 
+def _to_number(series: pd.Series) -> pd.Series:
+    return pd.to_numeric(series, errors="coerce")
+
+
+def _pct_decimal(new: float | None, old: float | None) -> float | None:
+    if new is None or old in (None, 0):
+        return None
+    return round((new - old) / old, 4)
+
+
+def _plain_number(value: Any) -> float | None:
+    if value is None or pd.isna(value):
+        return None
+    return float(value)
+
+
+def _price_trend(prices: list[float]) -> str:
+    if len(prices) < 2:
+        return "new"
+    change = _pct_decimal(prices[-1], prices[0])
+    if change is None:
+        return "new"
+    if change <= -0.01:
+        return "down"
+    if change >= 0.01:
+        return "up"
+    return "stable"
+
+
+def _build_accommodation_stats(acc_df: pd.DataFrame, top_df: pd.DataFrame) -> list[list[Any]]:
+    """Summarise accommodation history + recommendation frequency."""
+    if acc_df is None or acc_df.empty:
+        return []
+
+    acc = acc_df.copy()
+    for col in ("price_eur", "composite_score", "distance_km"):
+        if col in acc:
+            acc[col] = _to_number(acc[col])
+    if "date" in acc:
+        acc["date"] = acc["date"].astype(str)
+
+    top = pd.DataFrame() if top_df is None else top_df.copy()
+    if not top.empty:
+        if "date" in top:
+            top["date"] = top["date"].astype(str)
+        if "rank" in top:
+            top["rank"] = _to_number(top["rank"])
+
+    rows: list[list[Any]] = []
+    for hotel_id, group in acc.groupby("hotel_id", dropna=True):
+        group = group.sort_values("date")
+        latest = group.iloc[-1]
+        price_series = group["price_eur"].dropna() if "price_eur" in group else pd.Series(dtype=float)
+        prices = [float(v) for v in price_series.tolist()]
+        recent_prices = prices[-7:]
+        latest_price = prices[-1] if prices else None
+        first_price = prices[0] if prices else None
+        avg_7d = round(sum(recent_prices) / len(recent_prices), 2) if recent_prices else None
+
+        if not top.empty:
+            matches = pd.DataFrame()
+            if "hotel_id" in top:
+                matches = top[top["hotel_id"].astype(str) == str(hotel_id)]
+            if matches.empty:
+                latest_link = str(latest.get("booking_link", ""))
+                latest_name = str(latest.get("name", ""))
+                link_matches = (
+                    top[top["link"].astype(str) == latest_link]
+                    if "link" in top and latest_link
+                    else pd.DataFrame()
+                )
+                name_matches = (
+                    top[top["name"].astype(str) == latest_name]
+                    if "name" in top and latest_name
+                    else pd.DataFrame()
+                )
+                matches = pd.concat([link_matches, name_matches]).drop_duplicates()
+        else:
+            matches = pd.DataFrame()
+
+        match_dates = sorted(matches["date"].dropna().astype(str).tolist()) if not matches.empty and "date" in matches else []
+        price_history = " | ".join(
+            f"{row['date']}: EUR {float(row['price_eur']):g}"
+            for _, row in group.dropna(subset=["price_eur"]).tail(10).iterrows()
+        )
+        latest_vs_first = _pct_decimal(latest_price, first_price) if len(prices) >= 2 else None
+        latest_vs_7d = _pct_decimal(latest_price, avg_7d) if len(recent_prices) >= 2 else None
+
+        rows.append([
+            hotel_id,
+            latest.get("source"),
+            latest.get("name"),
+            group["date"].iloc[0],
+            group["date"].iloc[-1],
+            int(group["date"].nunique()),
+            int(len(matches)),
+            int((matches["rank"] == 1).sum()) if not matches.empty and "rank" in matches else 0,
+            match_dates[0] if match_dates else None,
+            match_dates[-1] if match_dates else None,
+            latest_price,
+            float(price_series.min()) if not price_series.empty else None,
+            float(price_series.max()) if not price_series.empty else None,
+            round(float(price_series.mean()), 2) if not price_series.empty else None,
+            _plain_number(latest.get("composite_score")),
+            _plain_number(latest.get("distance_km")),
+            _price_trend(recent_prices),
+            latest_vs_first,
+            latest_vs_7d,
+            price_history,
+            latest.get("booking_link"),
+        ])
+
+    rows.sort(key=lambda r: (-(r[6] or 0), str(r[2] or "")))
+    return rows
+
+
 class SheetsWriter:
     """Thin wrapper over gspread. No-ops gracefully without credentials."""
 
@@ -166,6 +306,21 @@ class SheetsWriter:
                 ws = self._spreadsheet.add_worksheet(title=title, rows=1000, cols=len(cols))
                 ws.append_row([c[0] for c in cols], value_input_option="USER_ENTERED")
                 self._format_worksheet(ws, cols)
+            else:
+                ws = self._spreadsheet.worksheet(title)
+                self._ensure_header(ws, cols)
+
+    def _ensure_header(self, ws: Any, cols: list[tuple[str, str, int]]) -> None:
+        """Add missing trailing headers and refresh formatting for existing tabs."""
+        expected = [c[0] for c in cols]
+        current = ws.row_values(1)
+        if current[: len(expected)] != expected:
+            ws.update(
+                range_name="A1",
+                values=[expected],
+                value_input_option="USER_ENTERED",
+            )
+            self._format_worksheet(ws, cols)
 
     def setup(self, reset: bool = False) -> None:
         """Create / reformat all worksheets.
@@ -373,6 +528,7 @@ class SheetsWriter:
                     vs_y / 100 if vs_y is not None else None,
                     vs_7 / 100 if vs_7 is not None else None,
                     pick.get("alert_triggered", False), pick["booking_link"],
+                    pick.get("hotel_id"),
                 ]
             )
         self._append("daily_top2", rows)
@@ -389,16 +545,39 @@ class SheetsWriter:
         ]
         self._append("alerts_log", rows)
 
+    def refresh_accommodation_stats(self) -> None:
+        """Rebuild the accommodation_stats worksheet from raw history + top picks."""
+        if not self.enabled:
+            return
+        acc_df = self._read_worksheet("accommodation_raw")
+        top_df = self._read_worksheet("daily_top2")
+        rows = _build_accommodation_stats(acc_df, top_df)
+        ws = self._spreadsheet.worksheet("accommodation_stats")
+        headers = WORKSHEETS["accommodation_stats"]
+        ws.clear()
+        ws.update(
+            range_name="A1",
+            values=[headers] + rows,
+            value_input_option="USER_ENTERED",
+        )
+        self._format_worksheet(ws, COLUMNS["accommodation_stats"])
+        print(f"[sheets] refreshed accommodation_stats ({len(rows)} rows)")
+
     # ------------------------------------------------------------------
     # Reads
     # ------------------------------------------------------------------
 
+    def _read_worksheet(self, title: str) -> pd.DataFrame:
+        ws = self._spreadsheet.worksheet(title)
+        records = ws.get_all_records()
+        if records:
+            return pd.DataFrame(records)
+        return pd.DataFrame(columns=WORKSHEETS[title])
+
     def read_accommodation_history(self) -> pd.DataFrame:
         if not self.enabled:
             return pd.DataFrame(columns=WORKSHEETS["accommodation_raw"])
-        ws = self._spreadsheet.worksheet("accommodation_raw")
-        records = ws.get_all_records()
-        df = pd.DataFrame(records)
+        df = self._read_worksheet("accommodation_raw")
         if not df.empty:
             df["price_eur"] = pd.to_numeric(df["price_eur"], errors="coerce")
         return df

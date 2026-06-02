@@ -14,7 +14,7 @@ from typing import Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 TransportType = Literal["flight", "flixbus"]
-AccommodationSource = Literal["booking_com", "airbnb"]
+AccommodationSource = Literal["booking_com", "airbnb", "skyscanner"]
 
 
 class Coordinates(BaseModel):

@@ -18,9 +18,9 @@ accommodation:
   max_distance_km: 3.0
   nights: 4
   sources:
-    - booking_com     # PRIMARY: Apify voyager/booking-scraper (free tier ~$5/mo compute)
-    - skyscanner      # FALLBACK: only used if Apify token missing, errors, or returns 0 results
-    # - airbnb        # disabled to save Apify compute (free tier ~$5/mo)
+    - booking_com     # Apify voyager/booking-scraper
+    - airbnb          # Apify tri_angle/airbnb-scraper
+    - skyscanner      # Sky-Scrapper hotels via RapidAPI, aggregates hotel providers
 
 transport:
   budget_flight_eur: 60               # per person one-way

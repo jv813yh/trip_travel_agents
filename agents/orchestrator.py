@@ -108,6 +108,7 @@ def run(dry_run: bool = False) -> dict:
         sheets.write_daily_top2(run_date, analysis_dict)
         if alerts:
             sheets.write_alerts(alerts)
+        sheets.refresh_accommodation_stats()
 
     # 6. Email digest (preview-only without credentials)
     if not dry_run:
