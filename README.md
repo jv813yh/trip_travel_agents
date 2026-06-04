@@ -57,19 +57,24 @@ API's code sample:
 
 ```text
 RAPIDAPI_SKY_KEY=<X-RapidAPI-Key from the paid API/app>
-RAPIDAPI_SKY_HOST=<X-RapidAPI-Host from the paid API, for example sky-scrapper.p.rapidapi.com>
+RAPIDAPI_SKY_HOST=<X-RapidAPI-Host from the paid API, for example sky-scrapper3.p.rapidapi.com>
 ```
 
 `RAPIDAPI_SKY_KEY` falls back to `RAPIDAPI_KEY` when unset. Optional path overrides are also
 available if the paid product uses different endpoint paths:
 
 ```text
-RAPIDAPI_SKY_FLIGHTS_PATH=/api/v1/flights/searchFlights
+RAPIDAPI_SKY_FLIGHTS_PATH=/scrape
 RAPIDAPI_SKY_HOTELS_PATH=/api/v1/hotels/searchHotels
 ```
 
-The Actions log prints the Sky Scrapper host on API errors, which helps confirm whether the run is
-hitting the paid subscription or an exhausted BASIC subscription.
+The code defaults to the newer `sky-scrapper3.p.rapidapi.com` Ultra host. That product's sample
+uses `GET /scrape?target=...`, so flight results are only parsed when the response contains
+structured itinerary JSON. If you subscribe to an older structured flights product instead, set
+`RAPIDAPI_SKY_HOST=sky-scrapper.p.rapidapi.com` and
+`RAPIDAPI_SKY_FLIGHTS_PATH=/api/v1/flights/searchFlights`. The Actions log prints the Sky Scrapper
+host on API errors, which helps confirm whether the run is hitting the paid subscription or an
+exhausted BASIC subscription.
 
 > Personal, non-commercial use only. Scraping Booking.com / Airbnb may violate their ToS — this
 > project uses Apify actors; review the notes in CLAUDE.md.

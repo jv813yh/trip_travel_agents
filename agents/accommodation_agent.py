@@ -88,7 +88,9 @@ AIRBNB_ACTOR = "trakk/airbnb-scraper"
 
 # Sky-Scrapper hotels — resolved once via /hotels/searchDestinationOrHotel.
 # Refresh if the city changes.
-DEFAULT_SKYSCANNER_HOST = "sky-scrapper.p.rapidapi.com"
+STRUCTURED_SKYSCANNER_HOST = "sky-scrapper.p.rapidapi.com"
+GENERIC_SKYSCANNER_HOST = "sky-scrapper3.p.rapidapi.com"
+DEFAULT_SKYSCANNER_HOST = GENERIC_SKYSCANNER_HOST
 DEFAULT_SKYSCANNER_HOTELS_PATH = "/api/v1/hotels/searchHotels"
 SKYSCANNER_WARSAW_ENTITY_ID = "27547454"
 
@@ -121,11 +123,11 @@ def _skyscanner_hotels_url() -> str:
 def _is_supported_skyscanner_api() -> bool:
     """Return false for generic RapidAPI scraper products that lack hotel endpoints."""
     host = _skyscanner_host()
-    if host == "sky-scrapper3.p.rapidapi.com":
+    if host == GENERIC_SKYSCANNER_HOST:
         msg = (
-            "RAPIDAPI_SKY_HOST=sky-scrapper3.p.rapidapi.com is a generic POST /scrape "
-            "API, not the Sky-Scrapper hotels API. Use a RapidAPI subscription whose "
-            "sample code calls /api/v1/hotels/searchHotels."
+            "RAPIDAPI_SKY_HOST=sky-scrapper3.p.rapidapi.com is the newer generic "
+            "GET /scrape API, not the structured Sky-Scrapper hotels API. Skipping "
+            "Skyscanner hotels to avoid calling the exhausted Basic API."
         )
         print(f"[skyscanner_hotels] {msg}")
         _LAST_ERRORS.append(msg)

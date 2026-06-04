@@ -1,6 +1,6 @@
 """Flights agent — fetches one-way flight prices KSC -> WAW/WMI.
 
-Primary source: Sky-Scrapper API via RapidAPI (sky-scrapper.p.rapidapi.com).
+Primary source: Sky Scrapper API via RapidAPI.
 This is the "Air Scraper"-style endpoint family — uses a two-id system
 (skyId + entityId per airport). We hardcode the IDs for our three airports
 (resolved once via /api/v1/flights/searchAirport); refresh them via that
@@ -31,8 +31,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from utils.config_loader import load_config  # noqa: E402
 
-DEFAULT_RAPIDAPI_HOST = "sky-scrapper.p.rapidapi.com"
-DEFAULT_SEARCH_PATH = "/api/v1/flights/searchFlights"
+STRUCTURED_SKY_HOST = "sky-scrapper.p.rapidapi.com"
+GENERIC_SKY_HOST = "sky-scrapper3.p.rapidapi.com"
+STRUCTURED_SEARCH_PATH = "/api/v1/flights/searchFlights"
+GENERIC_SCRAPE_PATH = "/scrape"
+
+# Default to the newer Ultra product from RapidAPI's sample code. The older
+# structured API can still be selected with RAPIDAPI_SKY_HOST=sky-scrapper.p.rapidapi.com.
+DEFAULT_RAPIDAPI_HOST = GENERIC_SKY_HOST
 
 # Sky-Scrapper requires both skyId (IATA-like) AND entityId per airport.
 # Resolved via /api/v1/flights/searchAirport; refresh if airports change.
@@ -64,25 +70,16 @@ def _rapidapi_host() -> str:
 
 
 def _search_url() -> str:
-    path = _env_value("RAPIDAPI_SKY_FLIGHTS_PATH") or DEFAULT_SEARCH_PATH
+    default_path = GENERIC_SCRAPE_PATH if _uses_generic_scraper() else STRUCTURED_SEARCH_PATH
+    path = _env_value("RAPIDAPI_SKY_FLIGHTS_PATH") or default_path
     if not path.startswith("/"):
         path = f"/{path}"
     return f"https://{_rapidapi_host()}{path}"
 
 
-def _is_supported_sky_api() -> bool:
-    """Return false for generic RapidAPI scraper products that lack flight endpoints."""
-    host = _rapidapi_host()
-    if host == "sky-scrapper3.p.rapidapi.com":
-        msg = (
-            "RAPIDAPI_SKY_HOST=sky-scrapper3.p.rapidapi.com is a generic POST /scrape "
-            "API, not the Sky-Scrapper flights API. Use a RapidAPI subscription whose "
-            "sample code calls /api/v1/flights/searchFlights."
-        )
-        print(f"[flights] {msg}")
-        _LAST_ERRORS.append(msg)
-        return False
-    return True
+def _uses_generic_scraper() -> bool:
+    """Return true for the newer Sky Scrapper Ultra /scrape product."""
+    return _rapidapi_host() == GENERIC_SKY_HOST
 
 
 def get_last_errors() -> list[str]:
@@ -103,6 +100,11 @@ def _skyscanner_search_link(origin: str, dest: str, date: str, adults: int) -> s
         f"https://www.skyscanner.com/transport/flights/{origin.lower()}/{dest.lower()}/"
         f"{date.replace('-', '')[2:]}/?adults={adults}"
     )
+
+
+def _sky_scrapper3_target(origin: str, dest: str, date: str) -> str:
+    """Return the public Skyscanner page URL passed to Sky Scrapper 3's /scrape endpoint."""
+    return _skyscanner_search_link(origin, dest, date, adults=1)
 
 
 def _is_verified_direct_market(carrier: str, origin: str, dest: str) -> bool:
@@ -179,6 +181,21 @@ def _query_skyscanner(origin: str, dest: str, date: str, max_stops: int) -> list
     """
     import requests
 
+    key = _rapidapi_key()
+    if not key:
+        print("[flights] RAPIDAPI_KEY/RAPIDAPI_SKY_KEY not set - returning empty.")
+        return []
+
+    host = _rapidapi_host()
+    headers = {
+        "x-rapidapi-key": key,
+        "x-rapidapi-host": host,
+        "Content-Type": "application/json",
+    }
+
+    if _uses_generic_scraper():
+        return _query_generic_scraper(origin, dest, date, max_stops, headers)
+
     origin_ids = AIRPORT_IDS.get(origin)
     dest_ids = AIRPORT_IDS.get(dest)
     if not origin_ids or not dest_ids:
@@ -187,16 +204,6 @@ def _query_skyscanner(origin: str, dest: str, date: str, max_stops: int) -> list
         _LAST_ERRORS.append(msg)
         return []
 
-    key = _rapidapi_key()
-    if not key:
-        print("[flights] RAPIDAPI_KEY/RAPIDAPI_SKY_KEY not set - returning empty.")
-        return []
-    host = _rapidapi_host()
-    headers = {
-        "x-rapidapi-key": key,
-        "x-rapidapi-host": host,
-        "Content-Type": "application/json",
-    }
     try:
         resp = requests.get(
             _search_url(), headers=headers,
@@ -255,6 +262,80 @@ def _query_skyscanner(origin: str, dest: str, date: str, max_stops: int) -> list
     return out
 
 
+def _query_generic_scraper(
+    origin: str,
+    dest: str,
+    date: str,
+    max_stops: int,
+    headers: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Call the newer sky-scrapper3 /scrape endpoint.
+
+    RapidAPI's Ultra sample calls GET /scrape with a `target` URL. If that
+    target ever returns the same structured JSON as the older flight endpoint,
+    we parse it. If it returns generic scraped page content, we record a clear
+    warning so the email explains why live flight prices are missing.
+    """
+    import requests
+
+    host = _rapidapi_host()
+    target = _sky_scrapper3_target(origin, dest, date)
+    try:
+        resp = requests.get(
+            _search_url(),
+            headers=headers,
+            params={"target": target},
+            timeout=30,
+        )
+        if resp.status_code >= 400:
+            msg = (
+                f"Sky Scrapper 3 HTTP {resp.status_code} via host {host} for "
+                f"{origin}->{dest} {date}: {resp.text[:200]}"
+            )
+            print(f"[flights] {msg}")
+            _LAST_ERRORS.append(msg)
+            return []
+        payload = resp.json()
+    except (requests.RequestException, ValueError) as e:
+        msg = f"Sky Scrapper 3 /scrape call failed ({origin}->{dest} {date}): {type(e).__name__}: {e}"
+        print(f"[flights] {msg}")
+        _LAST_ERRORS.append(msg)
+        return []
+
+    itineraries = (payload.get("data") or {}).get("itineraries", [])
+    if not itineraries:
+        msg = (
+            "Sky Scrapper 3 responded, but did not return structured flight itineraries. "
+            "This Ultra product uses /scrape target URLs; configure a structured flights "
+            "API host/path if you need parsed prices."
+        )
+        print(f"[flights] {msg}")
+        _LAST_ERRORS.append(msg)
+        return []
+
+    out = []
+    for item in itineraries:
+        legs = item.get("legs") or [{}]
+        leg = legs[0]
+        stops = leg.get("stopCount", 0)
+        if stops > max_stops:
+            continue
+        marketing = (leg.get("carriers") or {}).get("marketing") or [{}]
+        carrier = marketing[0].get("name") if marketing else None
+        dep = leg.get("departure") or ""
+        arr = leg.get("arrival") or ""
+        out.append({
+            "carrier": carrier or "Unknown",
+            "price_eur": (item.get("price") or {}).get("raw"),
+            "duration_min": leg.get("durationInMinutes"),
+            "departure": dep[11:16] if len(dep) >= 16 else dep,
+            "arrival": arr[11:16] if len(arr) >= 16 else arr,
+            "stops": stops,
+            "booking_link": target,
+        })
+    return out
+
+
 def _fetch_live(config: dict[str, Any]) -> list[dict[str, Any]]:
     trip = config["trip"]
     origin = trip["origin_airport"]
@@ -294,8 +375,6 @@ def fetch_flights(config: dict[str, Any], dry_run: bool = False) -> list[dict[st
         return _mock_data(config)
     if not _rapidapi_key():
         print("[flights] RAPIDAPI_KEY/RAPIDAPI_SKY_KEY not set — returning empty.")
-        return []
-    if not _is_supported_sky_api():
         return []
     return _fetch_live(config)
 
