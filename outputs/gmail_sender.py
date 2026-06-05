@@ -287,22 +287,22 @@ def build_html(
     if best_flight or best_flixbus:
         if best_flight:
             parts.append(_transport_card(best_flight, "Best flight", rec_type == "flight"))
+        elif indicative_flight:
+            parts.append(
+                "<div style='border:1px solid #ffe8a1;border-radius:6px;padding:10px 12px;"
+                "margin:8px 0;background:#fffaf0'><b>Flight price signal: "
+                f"{indicative_flight.get('carrier')}</b><br>"
+                f"EUR {indicative_flight.get('price_eur_per_person')}/person. "
+                "Schedule and duration are not available from this API, so this is not used "
+                "as the recommendation.<br>"
+                f"<a href='{indicative_flight.get('booking_link')}'>{_transport_link_label(indicative_flight)}</a>"
+                "</div>"
+            )
         else:
             parts.append(
                 "<div style='border:1px solid #f5c2c7;border-radius:6px;padding:10px 12px;"
                 "margin:8px 0;background:#fff5f5'><b>Best flight:</b> no flight data found today.</div>"
             )
-            if indicative_flight:
-                parts.append(
-                    "<div style='border:1px solid #ffe8a1;border-radius:6px;padding:10px 12px;"
-                    "margin:8px 0;background:#fffaf0'><b>Flight price signal: "
-                    f"{indicative_flight.get('carrier')}</b><br>"
-                    f"EUR {indicative_flight.get('price_eur_per_person')}/person. "
-                    "Schedule and duration are not available from this API, so this is not used "
-                    "as the recommendation.<br>"
-                    f"<a href='{indicative_flight.get('booking_link')}'>{_transport_link_label(indicative_flight)}</a>"
-                    "</div>"
-                )
         if best_flixbus:
             parts.append(_transport_card(best_flixbus, "Best FlixBus", rec_type == "flixbus"))
         else:
