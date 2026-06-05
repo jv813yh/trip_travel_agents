@@ -612,3 +612,11 @@ class SheetsWriter:
             df = _with_price_aliases(df)
             df["price_eur"] = pd.to_numeric(df["price_eur"], errors="coerce")
         return df
+
+    def read_transport_history(self) -> pd.DataFrame:
+        if not self.enabled:
+            return pd.DataFrame(columns=WORKSHEETS["transport_raw"])
+        df = self._read_worksheet("transport_raw")
+        if not df.empty and "price_eur_pp" in df:
+            df["price_eur_pp"] = pd.to_numeric(df["price_eur_pp"], errors="coerce")
+        return df

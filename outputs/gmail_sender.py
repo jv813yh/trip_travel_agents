@@ -62,6 +62,48 @@ def _trend_chart_b64(history_df: pd.DataFrame, top_picks: list[dict[str, Any]]) 
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
+def _transport_trend_chart_b64(history_df: pd.DataFrame, options: list[dict[str, Any]]) -> str | None:
+    """Render a 14-day transport price trend for today's options by trip_id."""
+    if history_df is None or history_df.empty or not options or "trip_id" not in history_df:
+        return None
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(6, 2.6), dpi=120)
+    plotted = False
+    for option in options:
+        trip_id = option.get("trip_id")
+        if not trip_id:
+            continue
+        hist = history_df[history_df["trip_id"].astype(str) == str(trip_id)].copy()
+        if hist.empty or "price_eur_pp" not in hist:
+            continue
+        hist["price_eur_pp"] = pd.to_numeric(hist["price_eur_pp"], errors="coerce")
+        hist = hist.dropna(subset=["price_eur_pp"]).sort_values("date").tail(14)
+        if hist.empty:
+            continue
+        label = f"{option.get('carrier') or option.get('type')} ({option.get('type')})"
+        ax.plot(hist["date"].astype(str), hist["price_eur_pp"], marker="o", label=label[:24])
+        plotted = True
+    if not plotted:
+        plt.close(fig)
+        return None
+
+    ax.set_ylabel("EUR / person")
+    ax.set_title("Transport price trend")
+    ax.grid(axis="y", alpha=0.25)
+    ax.legend(fontsize=7)
+    ax.tick_params(axis="x", labelrotation=45, labelsize=7)
+    fig.tight_layout()
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png")
+    plt.close(fig)
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
 def _score_breakdown(
     price: float, rating: float, distance_km: float,
     config: dict[str, Any], source: str = "booking_com",
@@ -173,7 +215,12 @@ def _transport_card(option: dict[str, Any], title: str, recommended: bool = Fals
     )
 
 
-def build_html(analysis: dict[str, Any], history_df: pd.DataFrame, config: dict[str, Any]) -> str:
+def build_html(
+    analysis: dict[str, Any],
+    history_df: pd.DataFrame,
+    config: dict[str, Any],
+    transport_history_df: pd.DataFrame | None = None,
+) -> str:
     acc = analysis["accommodation"]
     transport = analysis["transport"]
     target = config["accommodation"]["target_address"]
@@ -271,6 +318,14 @@ def build_html(analysis: dict[str, Any], history_df: pd.DataFrame, config: dict[
 
     parts.append(f"<p style='color:#555'>{transport.get('reasoning','')}</p>")
 
+    transport_chart = _transport_trend_chart_b64(
+        transport_history_df,
+        [o for o in transport.get("options", []) if o.get("type") in ("flight", "flixbus")],
+    )
+    if transport_chart:
+        parts.append("<h3 style='margin-bottom:6px'>Transport Price History</h3>")
+        parts.append(f"<img src='data:image/png;base64,{transport_chart}' alt='Transport price history'/>")
+
     # 2. Accommodation
     parts.append(f"<h2>🏠 Top picks near {target}</h2>")
     if accommodation_warnings:
@@ -353,9 +408,14 @@ def _gmail_service():
     return build("gmail", "v1", credentials=creds)
 
 
-def send(analysis: dict[str, Any], history_df: pd.DataFrame, config: dict[str, Any]) -> bool:
+def send(
+    analysis: dict[str, Any],
+    history_df: pd.DataFrame,
+    config: dict[str, Any],
+    transport_history_df: pd.DataFrame | None = None,
+) -> bool:
     """Send the digest. Returns True if actually sent, False if previewed only."""
-    html = build_html(analysis, history_df, config)
+    html = build_html(analysis, history_df, config, transport_history_df)
     recipient = os.environ.get("RECIPIENT_EMAIL")
 
     if not (os.environ.get("GMAIL_CREDENTIALS") and recipient):

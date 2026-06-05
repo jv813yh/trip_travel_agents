@@ -73,6 +73,7 @@ def run(dry_run: bool = False) -> dict:
     # 3. Price history + alerts
     sheets = SheetsWriter(config, dry_run=dry_run)
     history = sheets.read_accommodation_history()
+    transport_history = sheets.read_transport_history()
     alerts = check_price_alerts(accommodation, history, config)
     print(f"  {len(alerts)} alert(s) triggered")
 
@@ -115,10 +116,10 @@ def run(dry_run: bool = False) -> dict:
 
     # 6. Email digest (preview-only without credentials)
     if not dry_run:
-        gmail_sender.send(analysis_dict, history, config)
+        gmail_sender.send(analysis_dict, history, config, transport_history)
     else:
         Path(gmail_sender._PREVIEW_PATH).write_text(
-            gmail_sender.build_html(analysis_dict, history, config), encoding="utf-8"
+            gmail_sender.build_html(analysis_dict, history, config, transport_history), encoding="utf-8"
         )
         print(f"  digest preview written to {gmail_sender._PREVIEW_PATH}")
 
