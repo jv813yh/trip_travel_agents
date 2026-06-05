@@ -58,6 +58,65 @@ def _merge_query(url: str, overrides: dict[str, Any]) -> str:
                           _u.urlencode(merged), parts.fragment))
 
 
+def _first_url(value: Any) -> str | None:
+    """Find the first URL-ish string in a provider object."""
+    if isinstance(value, str):
+        if value.startswith(("http://", "https://", "/")):
+            return value
+        return None
+    if isinstance(value, dict):
+        for key in (
+            "url", "link", "bookingLink", "booking_link", "deeplink",
+            "deepLink", "roomUrl", "hotelUrl", "listingUrl", "canonicalUrl",
+        ):
+            found = _first_url(value.get(key))
+            if found:
+                return found
+        for child in value.values():
+            found = _first_url(child)
+            if found:
+                return found
+    if isinstance(value, list):
+        for child in value:
+            found = _first_url(child)
+            if found:
+                return found
+    return None
+
+
+def _absolute_url(url: str | None, base: str) -> str | None:
+    if not url:
+        return None
+    return _u.urljoin(base, url)
+
+
+def _booking_listing_url(item: dict[str, Any]) -> str | None:
+    """Return the most specific Booking.com hotel URL available."""
+    for key in ("url", "hotelUrl", "hotel_url", "bookingLink", "booking_link", "link", "canonicalUrl"):
+        url = _absolute_url(_first_url(item.get(key)), "https://www.booking.com")
+        if url and "booking.com" in url and "/hotel/" in _u.urlsplit(url).path:
+            return url
+    url = _absolute_url(_first_url(item), "https://www.booking.com")
+    if url and "booking.com" in url and "/hotel/" in _u.urlsplit(url).path:
+        return url
+    return url
+
+
+def _airbnb_listing_url(item: dict[str, Any]) -> str | None:
+    """Return the most specific Airbnb room URL available."""
+    for key in ("url", "listingUrl", "roomUrl", "airbnbUrl", "link", "canonicalUrl"):
+        url = _absolute_url(_first_url(item.get(key)), "https://www.airbnb.com")
+        if url and "airbnb." in url and "/rooms/" in _u.urlsplit(url).path:
+            return url
+    url = _absolute_url(_first_url(item), "https://www.airbnb.com")
+    if url and "airbnb." in url and "/rooms/" in _u.urlsplit(url).path:
+        return url
+    listing_id = item.get("id") or item.get("listingId") or item.get("roomId")
+    if listing_id:
+        return f"https://www.airbnb.com/rooms/{listing_id}"
+    return url
+
+
 def _booking_deep_link(url: str | None, config: dict[str, Any]) -> str | None:
     """Set checkin/checkout/group params on a Booking.com hotel URL."""
     if not url or "booking.com" not in url:
@@ -190,6 +249,11 @@ def _fetch_booking(client: Any, config: dict[str, Any]) -> list[dict[str, Any]]:
     items = _run_actor(client, BOOKING_ACTOR, run_input)
     out = []
     for it in items:
+        listing_url = _booking_listing_url(it)
+        if listing_url and "booking.com" in listing_url and "/hotel/" not in _u.urlsplit(listing_url).path:
+            _LAST_ERRORS.append(
+                f"Booking.com returned a non-hotel search link for {it.get('name') or it.get('id')}."
+            )
         rooms = _infer_room_count(it)
         price_fields = _normalise_accommodation_price(
             _coerce_price(it.get("price")),
@@ -207,7 +271,7 @@ def _fetch_booking(client: Any, config: dict[str, Any]) -> list[dict[str, Any]]:
                     "lat": (it.get("location") or {}).get("lat") or it.get("lat"),
                     "lng": (it.get("location") or {}).get("lng") or it.get("lng"),
                     "availability": True,
-                    "booking_link": _booking_deep_link(it.get("url"), config),
+                    "booking_link": _booking_deep_link(listing_url, config),
                 },
                 "booking_com",
                 config,
@@ -333,6 +397,11 @@ def _fetch_airbnb(client: Any, config: dict[str, Any]) -> list[dict[str, Any]]:
     items = _run_actor(client, AIRBNB_ACTOR, run_input)
     out = []
     for it in items:
+        listing_url = _airbnb_listing_url(it)
+        if listing_url and "airbnb." in listing_url and "/rooms/" not in _u.urlsplit(listing_url).path:
+            _LAST_ERRORS.append(
+                f"Airbnb returned a non-room search link for {it.get('name') or it.get('id')}."
+            )
         coords = it.get("coordinates") or {}
         price = it.get("price") or it.get("pricing")
         price_fields = _normalise_accommodation_price(
@@ -353,7 +422,7 @@ def _fetch_airbnb(client: Any, config: dict[str, Any]) -> list[dict[str, Any]]:
                     "lat": it.get("lat") or coords.get("latitude") or coords.get("lat"),
                     "lng": it.get("lng") or coords.get("longitude") or coords.get("lng"),
                     "availability": True,
-                    "booking_link": _airbnb_deep_link(it.get("url"), config),
+                    "booking_link": _airbnb_deep_link(listing_url, config),
                 },
                 "airbnb",
                 config,

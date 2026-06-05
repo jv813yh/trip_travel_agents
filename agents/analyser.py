@@ -35,6 +35,8 @@ Given today's scraped data, select the TOP 2 accommodation options and TOP 1 tra
 Accommodation is pre-scored (composite_score, 0-100, higher = better). Prefer higher scores but
 apply judgement. For transport, compare available flights vs FlixBus considering total door-to-door
 travel time for the group, not just ticket price, and recommend the better option with clear reasoning.
+Do not recommend a flight if duration, departure, or arrival is unavailable; treat it as an
+indicative price signal only.
 
 Output ONLY valid JSON matching the schema provided in the user message. Do not fabricate data.
 If a field is unavailable set it to null. Be concise.
@@ -221,7 +223,18 @@ def _analyse_deterministic(
 def _recommend_transport(options: list[dict[str, Any]]) -> tuple[str | None, str]:
     """Pick flight vs flixbus: favour the cheapest flight unless the time
     saved isn't worth the extra group cost vs the bus."""
-    flights = [o for o in options if o["type"] == "flight" and o.get("price_eur_per_person")]
+    flights = [
+        o for o in options
+        if o["type"] == "flight"
+        and o.get("price_eur_per_person")
+        and o.get("duration_min")
+        and o.get("departure")
+        and o.get("arrival")
+    ]
+    indicative_flights = [
+        o for o in options
+        if o["type"] == "flight" and o.get("price_eur_per_person") and o not in flights
+    ]
     buses = [o for o in options if o["type"] == "flixbus" and o.get("price_eur_per_person")]
     if not flights and not buses:
         return None, "No transport options available today."
@@ -230,6 +243,15 @@ def _recommend_transport(options: list[dict[str, Any]]) -> tuple[str | None, str
         return "flight", f"Only flights available. Cheapest: {f['carrier']} €{f['price_eur_per_person']}/person."
     if buses and not flights:
         b = min(buses, key=lambda o: o["price_eur_per_person"])
+        if indicative_flights:
+            cheapest = min(indicative_flights, key=lambda o: o["price_eur_per_person"])
+            return (
+                "flixbus",
+                f"FlixBus is the only option with a confirmed schedule today "
+                f"({b['price_eur_per_person']}/person). Kiwi shows an indicative flight price "
+                f"of {cheapest['price_eur_per_person']}/person, but no duration or departure time, "
+                "so it is not used as the recommendation.",
+            )
         return "flixbus", f"Only FlixBus available at €{b['price_eur_per_person']}/person."
 
     f = min(flights, key=lambda o: o["price_eur_per_person"])

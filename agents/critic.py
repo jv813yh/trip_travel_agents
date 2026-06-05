@@ -116,6 +116,16 @@ def _critique_deterministic(
     rec_type = transport.get("recommendation")
     if rec_type and not raw_transport:
         issues.append("transport recommendation provided but raw transport is empty")
+    if rec_type == "flight":
+        recommended_flights = [
+            o for o in transport.get("options", []) or []
+            if o.get("type") == "flight"
+        ]
+        if not any(
+            o.get("duration_min") is not None and o.get("departure") and o.get("arrival")
+            for o in recommended_flights
+        ):
+            issues.append("flight recommendation has no confirmed duration, departure, or arrival")
     for opt in transport.get("options", []) or []:
         if opt.get("trip_id") not in trip_ids:
             issues.append(f"transport trip_id '{opt.get('trip_id')}' not in raw")

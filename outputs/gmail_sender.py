@@ -189,9 +189,26 @@ def _best_transport(options: list[dict[str, Any]], transport_type: str) -> dict[
         o for o in options
         if o.get("type") == transport_type and o.get("price_eur_per_person") is not None
     ]
+    if transport_type == "flight":
+        typed = [
+            o for o in typed
+            if o.get("duration_min") is not None and o.get("departure") and o.get("arrival")
+        ]
     if not typed:
         return None
     return min(typed, key=lambda o: (o.get("price_eur_per_person") or 1e9, o.get("duration_min") or 1e9))
+
+
+def _best_indicative_flight(options: list[dict[str, Any]]) -> dict[str, Any] | None:
+    typed = [
+        o for o in options
+        if o.get("type") == "flight"
+        and o.get("price_eur_per_person") is not None
+        and not (o.get("duration_min") is not None and o.get("departure") and o.get("arrival"))
+    ]
+    if not typed:
+        return None
+    return min(typed, key=lambda o: o.get("price_eur_per_person") or 1e9)
 
 
 def _transport_card(option: dict[str, Any], title: str, recommended: bool = False) -> str:
@@ -235,6 +252,7 @@ def build_html(
     rec_type = transport.get("recommendation")
     rec = next((o for o in transport["options"] if o["type"] == rec_type), None) if rec_type else None
     best_flight = _best_transport(transport.get("options", []), "flight")
+    indicative_flight = _best_indicative_flight(transport.get("options", []))
     best_flixbus = _best_transport(transport.get("options", []), "flixbus")
 
     parts: list[str] = ["<div style='font-family:Arial,sans-serif;max-width:640px'>"]
@@ -274,6 +292,17 @@ def build_html(
                 "<div style='border:1px solid #f5c2c7;border-radius:6px;padding:10px 12px;"
                 "margin:8px 0;background:#fff5f5'><b>Best flight:</b> no flight data found today.</div>"
             )
+            if indicative_flight:
+                parts.append(
+                    "<div style='border:1px solid #ffe8a1;border-radius:6px;padding:10px 12px;"
+                    "margin:8px 0;background:#fffaf0'><b>Flight price signal: "
+                    f"{indicative_flight.get('carrier')}</b><br>"
+                    f"EUR {indicative_flight.get('price_eur_per_person')}/person. "
+                    "Schedule and duration are not available from this API, so this is not used "
+                    "as the recommendation.<br>"
+                    f"<a href='{indicative_flight.get('booking_link')}'>{_transport_link_label(indicative_flight)}</a>"
+                    "</div>"
+                )
         if best_flixbus:
             parts.append(_transport_card(best_flixbus, "Best FlixBus", rec_type == "flixbus"))
         else:
@@ -300,7 +329,7 @@ def build_html(
     all_options = sorted(
         [
             o for o in transport.get("options", [])
-            if o is not best_flight and o is not best_flixbus
+            if o is not best_flight and o is not best_flixbus and o is not indicative_flight
         ],
         key=lambda o: (o.get("price_eur_per_person") or 1e9),
     )
