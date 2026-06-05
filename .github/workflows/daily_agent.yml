@@ -25,9 +25,8 @@ jobs:
         env:
           APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
           RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
-          RAPIDAPI_SKY_KEY: ${{ secrets.RAPIDAPI_SKY_KEY }}
-          RAPIDAPI_SKY_HOST: sky-scrapper3.p.rapidapi.com
-          RAPIDAPI_SKY_FLIGHTS_PATH: /scrape
+          RAPIDAPI_KIWI_HOST: kiwi-com-flights-api.p.rapidapi.com
+          RAPIDAPI_KIWI_PRICE_MAP_PATH: /api/v1/flights/price-map
           RAPIDAPI_SKY_HOTELS_PATH: ${{ secrets.RAPIDAPI_SKY_HOTELS_PATH }}
           GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
           GOOGLE_SHEETS_CREDENTIALS: ${{ secrets.GOOGLE_SHEETS_CREDENTIALS }}

@@ -50,31 +50,30 @@ Set these as a local `.env` (gitignored) or as GitHub repository secrets — see
 [CLAUDE.md](CLAUDE.md#github-secrets-to-configure). Missing secrets degrade gracefully to mock data
 or no-op writes, so the pipeline always completes.
 
-### RapidAPI Sky Scrapper subscription
+### RapidAPI Kiwi.com Flights subscription
 
-If RapidAPI shows multiple similarly named Sky/Sky Scrapper APIs, copy the values from the paid
-API's code sample:
-
-```text
-RAPIDAPI_SKY_KEY=<X-RapidAPI-Key from the paid API/app>
-RAPIDAPI_SKY_HOST=<X-RapidAPI-Host from the paid API, for example sky-scrapper3.p.rapidapi.com>
-```
-
-`RAPIDAPI_SKY_KEY` falls back to `RAPIDAPI_KEY` when unset. Optional path overrides are also
-available if the paid product uses different endpoint paths:
+Flights use the Kiwi.com Flights API on RapidAPI. Copy the values from the paid API's code sample:
 
 ```text
-RAPIDAPI_SKY_FLIGHTS_PATH=/scrape
-RAPIDAPI_SKY_HOTELS_PATH=/api/v1/hotels/searchHotels
+RAPIDAPI_KEY=<X-RapidAPI-Key from RapidAPI>
+RAPIDAPI_KIWI_HOST=kiwi-com-flights-api.p.rapidapi.com
 ```
 
-The code defaults to the newer `sky-scrapper3.p.rapidapi.com` Ultra host. That product's sample
-uses `GET /scrape?target=...`, so flight results are only parsed when the response contains
-structured itinerary JSON. If you subscribe to an older structured flights product instead, set
-`RAPIDAPI_SKY_HOST=sky-scrapper.p.rapidapi.com` and
-`RAPIDAPI_SKY_FLIGHTS_PATH=/api/v1/flights/searchFlights`. The Actions log prints the Sky Scrapper
-host on API errors, which helps confirm whether the run is hitting the paid subscription or an
-exhausted BASIC subscription.
+The same `RAPIDAPI_KEY` is shared with FlixBus. `RAPIDAPI_KIWI_KEY` is optional and only needed if
+you later want a separate key for Kiwi. Optional path overrides are also available:
+
+```text
+RAPIDAPI_KIWI_PRICE_MAP_PATH=/api/v1/flights/price-map
+RAPIDAPI_KIWI_BOUNDING_BOX=49,14,55,25
+```
+
+The configured Kiwi endpoint is `price-map`, so flight prices are indicative map prices. Exact
+departure time, arrival time, duration, and booking links are included only when Kiwi returns those
+fields; otherwise the email shows the price and a Kiwi search link.
+
+Accommodation does not use Kiwi. Booking.com and Airbnb use Apify. The optional `skyscanner`
+accommodation source only works with a structured hotels API, not the generic Sky Scrapper 3
+`/scrape` product.
 
 > Personal, non-commercial use only. Scraping Booking.com / Airbnb may violate their ToS — this
 > project uses Apify actors; review the notes in CLAUDE.md.

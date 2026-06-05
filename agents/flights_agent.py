@@ -1,11 +1,12 @@
 """Flights agent — fetches one-way flight prices KSC -> WAW/WMI.
 
-Primary source: Sky Scrapper API via RapidAPI.
-This is the "Air Scraper"-style endpoint family — uses a two-id system
-(skyId + entityId per airport). We hardcode the IDs for our three airports
-(resolved once via /api/v1/flights/searchAirport); refresh them via that
-endpoint if anything stops working. Stores a route-hash trip_id so price
-history attributes to the same route+carrier over time.
+Primary source: Kiwi.com Flights API via RapidAPI.
+The configured endpoint is `/api/v1/flights/price-map`, which returns
+structured indicative prices for destinations inside a geographic bounding box.
+It is not a live itinerary search, so schedule fields may be unavailable. When
+missing, this agent leaves departure/arrival/duration as None instead of
+fabricating them. Stores a route-hash trip_id so price history attributes to
+the same route+carrier over time.
 
 In production this NEVER returns mock data — empty results propagate so the
 critic agent can flag "no transport available". When the configured outbound
@@ -24,29 +25,37 @@ import datetime as dt
 import os
 import sys
 import urllib.parse as _u
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from models.kiwi import KiwiAutocompleteResponse, KiwiPriceMapResponse  # noqa: E402
 from utils.config_loader import load_config  # noqa: E402
 
-STRUCTURED_SKY_HOST = "sky-scrapper.p.rapidapi.com"
-GENERIC_SKY_HOST = "sky-scrapper3.p.rapidapi.com"
-STRUCTURED_SEARCH_PATH = "/api/v1/flights/searchFlights"
-GENERIC_SCRAPE_PATH = "/scrape"
+KIWI_HOST = "kiwi-com-flights-api.p.rapidapi.com"
+KIWI_PRICE_MAP_PATH = "/api/v1/flights/price-map"
 
-# Default to the newer Ultra product from RapidAPI's sample code. The older
-# structured API can still be selected with RAPIDAPI_SKY_HOST=sky-scrapper.p.rapidapi.com.
-DEFAULT_RAPIDAPI_HOST = GENERIC_SKY_HOST
-
-# Sky-Scrapper requires both skyId (IATA-like) AND entityId per airport.
-# Resolved via /api/v1/flights/searchAirport; refresh if airports change.
-AIRPORT_IDS: dict[str, dict[str, str]] = {
-    "KSC": {"skyId": "KSC", "entityId": "104120247"},  # Košice
-    "WAW": {"skyId": "WAW", "entityId": "95673438"},   # Warsaw Chopin
-    "WMI": {"skyId": "WMI", "entityId": "128667439"},  # Warsaw Modlin
+# RapidAPI's Kiwi price-map source uses location slugs like the documentation
+# sample `london-united-kingdom`.
+KIWI_SOURCE_SLUGS: dict[str, str] = {
+    "KSC": "kosice-international-kosice-slovakia",
 }
+
+KIWI_PLACE_QUERIES: dict[str, str] = {
+    "KSC": "kosice",
+    "WAW": "warsaw",
+    "WMI": "modlin",
+}
+
+DESTINATION_HINTS: dict[str, set[str]] = {
+    "WAW": {"waw", "warsaw", "warszawa", "warsaw-poland", "chopin"},
+    "WMI": {"wmi", "modlin"},
+}
+
+# Broad Poland/Central-Europe box so Warsaw and Modlin are included.
+KIWI_POLAND_BOUNDING_BOX = "49,14,55,25"
 
 _LAST_ERRORS: list[str] = []
 
@@ -60,26 +69,27 @@ def _env_value(name: str) -> str | None:
 
 
 def _rapidapi_key() -> str | None:
-    """Return the Sky Scrapper-specific RapidAPI key, falling back to shared key."""
-    return _env_value("RAPIDAPI_SKY_KEY") or _env_value("RAPIDAPI_KEY")
+    """Return the Kiwi-specific RapidAPI key, falling back to the shared key."""
+    return _env_value("RAPIDAPI_KIWI_KEY") or _env_value("RAPIDAPI_KEY")
 
 
-def _rapidapi_host() -> str:
-    """Return the RapidAPI host for the subscribed Sky Scrapper API product."""
-    return _env_value("RAPIDAPI_SKY_HOST") or DEFAULT_RAPIDAPI_HOST
+def _kiwi_host() -> str:
+    """Return the RapidAPI host for the Kiwi.com Flights API product."""
+    return _env_value("RAPIDAPI_KIWI_HOST") or KIWI_HOST
 
 
-def _search_url() -> str:
-    default_path = GENERIC_SCRAPE_PATH if _uses_generic_scraper() else STRUCTURED_SEARCH_PATH
-    path = _env_value("RAPIDAPI_SKY_FLIGHTS_PATH") or default_path
+def _kiwi_price_map_url() -> str:
+    path = _env_value("RAPIDAPI_KIWI_PRICE_MAP_PATH") or KIWI_PRICE_MAP_PATH
     if not path.startswith("/"):
         path = f"/{path}"
-    return f"https://{_rapidapi_host()}{path}"
+    return f"https://{_kiwi_host()}{path}"
 
 
-def _uses_generic_scraper() -> bool:
-    """Return true for the newer Sky Scrapper Ultra /scrape product."""
-    return _rapidapi_host() == GENERIC_SKY_HOST
+def _kiwi_autocomplete_url() -> str:
+    path = _env_value("RAPIDAPI_KIWI_AUTOCOMPLETE_PATH") or "/api/v1/places/autocomplete"
+    if not path.startswith("/"):
+        path = f"/{path}"
+    return f"https://{_kiwi_host()}{path}"
 
 
 def get_last_errors() -> list[str]:
@@ -94,31 +104,67 @@ def _trip_id(origin: str, dest: str, date: str, carrier: str) -> str:
     return f"{origin}-{dest}-{date.replace('-', '')}-{code}"
 
 
-def _skyscanner_search_link(origin: str, dest: str, date: str, adults: int) -> str:
-    """Build a Skyscanner search URL with route/date/passengers pre-filled."""
-    return (
-        f"https://www.skyscanner.com/transport/flights/{origin.lower()}/{dest.lower()}/"
-        f"{date.replace('-', '')[2:]}/?adults={adults}"
-    )
+def _kiwi_search_link(origin: str, dest: str, date: str, adults: int) -> str:
+    """Build a Kiwi.com search URL with route/date/passengers pre-filled."""
+    q = _u.urlencode({"adults": adults})
+    return f"https://www.kiwi.com/en/search/results/{origin}/{dest}/{date}/no-return?{q}"
 
 
-def _sky_scrapper3_target(origin: str, dest: str, date: str) -> str:
-    """Return the public Skyscanner page URL passed to Sky Scrapper 3's /scrape endpoint."""
-    return _skyscanner_search_link(origin, dest, date, adults=1)
+def _headers() -> dict[str, str] | None:
+    key = _rapidapi_key()
+    if not key:
+        print("[flights] RAPIDAPI_KEY not set - returning empty.")
+        return None
+    return {
+        "x-rapidapi-key": key,
+        "x-rapidapi-host": _kiwi_host(),
+        "Content-Type": "application/json",
+    }
 
 
-def _is_verified_direct_market(carrier: str, origin: str, dest: str) -> bool:
-    """Return true only for direct airline markets we have verified.
+@lru_cache(maxsize=16)
+def _resolve_kiwi_place_slug(code: str) -> str | None:
+    """Resolve an IATA code to Kiwi's place slug via autocomplete."""
+    import requests
 
-    Aggregators may return low-cost self-transfer itineraries where the first
-    marketing carrier is Wizz/Ryanair, but those airlines reject direct
-    KSC-WAW/WMI checkout URLs. For unverified markets, link to Skyscanner
-    search instead of manufacturing an airline checkout URL.
-    """
-    c = (carrier or "").lower()
-    if origin == "KSC" and dest == "WAW" and ("lot" in c or c == "lo"):
-        return True
-    return False
+    headers = _headers()
+    if not headers:
+        return None
+
+    query = KIWI_PLACE_QUERIES.get(code, code)
+    try:
+        resp = requests.get(
+            _kiwi_autocomplete_url(),
+            headers=headers,
+            params={
+                "locale": "en-us",
+                "query": query,
+                "limit": "10",
+                "types": "CITY,STATION,AIRPORT",
+            },
+            timeout=20,
+        )
+        if resp.status_code >= 400:
+            msg = f"Kiwi autocomplete HTTP {resp.status_code} for {code}: {resp.text[:200]}"
+            print(f"[flights] {msg}")
+            _LAST_ERRORS.append(msg)
+            return KIWI_SOURCE_SLUGS.get(code)
+        parsed = KiwiAutocompleteResponse.model_validate(resp.json())
+    except (requests.RequestException, ValueError) as e:
+        msg = f"Kiwi autocomplete failed for {code}: {type(e).__name__}: {e}"
+        print(f"[flights] {msg}")
+        _LAST_ERRORS.append(msg)
+        return KIWI_SOURCE_SLUGS.get(code)
+
+    code_lower = code.casefold()
+    exact = next((p for p in parsed.places if (p.code or "").casefold() == code_lower), None)
+    place = exact or (parsed.places[0] if parsed.places else None)
+    if not place:
+        msg = f"Kiwi autocomplete returned no place for {code}."
+        print(f"[flights] {msg}")
+        _LAST_ERRORS.append(msg)
+        return KIWI_SOURCE_SLUGS.get(code)
+    return place.slug
 
 
 def _deep_link(
@@ -133,25 +179,7 @@ def _deep_link(
     """Build the safest booking/search link with date / pax pre-filled."""
     if fallback:
         return fallback
-
-    # Carrier checkout links are only safe for verified non-stop markets.
-    if stops != 0 or not _is_verified_direct_market(carrier, origin, dest):
-        return _skyscanner_search_link(origin, dest, date, adults)
-
-    c = (carrier or "").lower()
-    if "ryanair" in c:
-        q = _u.urlencode({
-            "adults": adults, "teens": 0, "children": 0, "infants": 0,
-            "dateOut": date, "originIata": origin, "destinationIata": dest,
-            "isReturn": "false",
-        })
-        return f"https://www.ryanair.com/gb/en/trip/flights/select?{q}"
-    if "wizz" in c:
-        return (
-            f"https://wizzair.com/en-gb/booking/select-flight/"
-            f"{origin}/{dest}/{date}/null/{adults}/0/0/null"
-        )
-    return _skyscanner_search_link(origin, dest, date, adults)
+    return _kiwi_search_link(origin, dest, date, adults)
 
 
 def _normalise(raw: dict[str, Any], origin: str, dest: str, date: str, offset: int, adults: int) -> dict[str, Any]:
@@ -173,167 +201,173 @@ def _normalise(raw: dict[str, Any], origin: str, dest: str, date: str, offset: i
     }
 
 
-def _query_skyscanner(origin: str, dest: str, date: str, max_stops: int) -> list[dict[str, Any]]:
+def _coerce_float(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, dict):
+        for key in ("amount", "value", "raw", "price", "minPrice"):
+            parsed = _coerce_float(value.get(key))
+            if parsed is not None:
+                return parsed
+        return None
+    digits = "".join(c for c in str(value) if c.isdigit() or c == ".")
+    return float(digits) if digits else None
+
+
+def _coerce_int(value: Any) -> int | None:
+    parsed = _coerce_float(value)
+    return int(parsed) if parsed is not None else None
+
+
+def _iter_dicts(value: Any):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _iter_dicts(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _iter_dicts(child)
+
+
+def _string_values(value: Any) -> list[str]:
+    out: list[str] = []
+    if isinstance(value, dict):
+        for child in value.values():
+            out.extend(_string_values(child))
+    elif isinstance(value, list):
+        for child in value:
+            out.extend(_string_values(child))
+    elif isinstance(value, str):
+        out.append(value.casefold())
+    return out
+
+
+def _matches_destination(item: dict[str, Any], dest: str) -> bool:
+    hints = DESTINATION_HINTS.get(dest, {dest.casefold()})
+    haystack = " ".join(_string_values(item))
+    return any(hint in haystack for hint in hints)
+
+
+def _first_value(item: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        if key in item and item[key] not in (None, ""):
+            return item[key]
+    for child in item.values():
+        if isinstance(child, dict):
+            found = _first_value(child, keys)
+            if found not in (None, ""):
+                return found
+    return None
+
+
+def _extract_price(item: dict[str, Any]) -> float | None:
+    for key in ("price", "amount", "value", "minPrice", "minimumPrice"):
+        parsed = _coerce_float(item.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _normalise_time(value: Any) -> str | None:
+    if not value:
+        return None
+    text = str(value)
+    if len(text) >= 16 and text[10] in ("T", " "):
+        return text[11:16]
+    if len(text) >= 5 and text[2] == ":":
+        return text[:5]
+    return text
+
+
+def _query_kiwi_price_map(origin: str, dest: str, date: str, max_stops: int) -> list[dict[str, Any]]:
     """Return raw flight items (unnormalised) for a single OD pair + date.
 
-    Always queries with adults=1 to get a stable per-person price; the group
-    size only affects the deep link, not the priced quote.
+    Kiwi price-map is indicative, so many items may only include a destination
+    and price. The parser is intentionally permissive and filters candidates
+    to Warsaw/WAW/WMI when the response contains richer destination fields.
     """
     import requests
 
-    key = _rapidapi_key()
-    if not key:
-        print("[flights] RAPIDAPI_KEY/RAPIDAPI_SKY_KEY not set - returning empty.")
+    headers = _headers()
+    if not headers:
         return []
 
-    host = _rapidapi_host()
-    headers = {
-        "x-rapidapi-key": key,
-        "x-rapidapi-host": host,
-        "Content-Type": "application/json",
-    }
-
-    if _uses_generic_scraper():
-        return _query_generic_scraper(origin, dest, date, max_stops, headers)
-
-    origin_ids = AIRPORT_IDS.get(origin)
-    dest_ids = AIRPORT_IDS.get(dest)
-    if not origin_ids or not dest_ids:
-        msg = f"No Sky-Scrapper IDs hardcoded for {origin}->{dest}; refresh AIRPORT_IDS."
+    host = _kiwi_host()
+    source = _resolve_kiwi_place_slug(origin)
+    if not source:
+        msg = f"No Kiwi source slug configured for {origin}; add it to KIWI_SOURCE_SLUGS."
         print(f"[flights] {msg}")
         _LAST_ERRORS.append(msg)
         return []
 
     try:
         resp = requests.get(
-            _search_url(), headers=headers,
+            _kiwi_price_map_url(),
+            headers=headers,
             params={
-                "originSkyId": origin_ids["skyId"],
-                "destinationSkyId": dest_ids["skyId"],
-                "originEntityId": origin_ids["entityId"],
-                "destinationEntityId": dest_ids["entityId"],
-                "date": date,
-                "adults": "1",
+                "source": source,
                 "currency": "EUR",
-                "cabinClass": "economy",
-                "sortBy": "best",
+                "start_date": date,
+                "end_date": date,
+                "bounding_box": _env_value("RAPIDAPI_KIWI_BOUNDING_BOX") or KIWI_POLAND_BOUNDING_BOX,
             },
             timeout=30,
         )
         if resp.status_code >= 400:
             msg = (
-                f"Sky-Scrapper API HTTP {resp.status_code} via host {host} for "
+                f"Kiwi.com Flights API HTTP {resp.status_code} via host {host} for "
                 f"{origin}->{dest} {date}: {resp.text[:200]}"
             )
             print(f"[flights] {msg}")
             _LAST_ERRORS.append(msg)
             return []
-        payload = resp.json()
+        payload = KiwiPriceMapResponse.model_validate(resp.json()).model_dump()
     except (requests.RequestException, ValueError) as e:
-        msg = f"Sky-Scrapper API call failed ({origin}->{dest} {date}): {type(e).__name__}: {e}"
+        msg = f"Kiwi.com Flights API call failed ({origin}->{dest} {date}): {type(e).__name__}: {e}"
         print(f"[flights] {msg}")
         _LAST_ERRORS.append(msg)
         return []
 
     out = []
-    itineraries = (payload.get("data") or {}).get("itineraries", [])
-    for item in itineraries:
-        legs = item.get("legs") or [{}]
-        leg = legs[0]
-        stops = leg.get("stopCount", 0)
+    for item in _iter_dicts(payload):
+        price = _extract_price(item)
+        if price is None or not _matches_destination(item, dest):
+            continue
+        stops = _coerce_int(_first_value(item, ("stops", "stopCount", "numberOfStops"))) or 0
         if stops > max_stops:
             continue
-        marketing = (leg.get("carriers") or {}).get("marketing") or [{}]
-        carrier = marketing[0].get("name") if marketing else None
-        dep = leg.get("departure") or ""
-        arr = leg.get("arrival") or ""
+        carrier = _first_value(item, ("airline", "airlines", "carrier", "carrierName", "company"))
+        if isinstance(carrier, list):
+            carrier = ", ".join(str(c) for c in carrier if c)
+        link = _first_value(item, ("deep_link", "deepLink", "booking_link", "bookingLink", "url", "link"))
         out.append({
-            "carrier": carrier or "Unknown",
-            "price_eur": (item.get("price") or {}).get("raw"),
-            "duration_min": leg.get("durationInMinutes"),
-            # Trim ISO "2026-08-07T15:05:00" -> "15:05"
-            "departure": dep[11:16] if len(dep) >= 16 else dep,
-            "arrival": arr[11:16] if len(arr) >= 16 else arr,
+            "carrier": str(carrier) if carrier else "Kiwi.com",
+            "price_eur": price,
+            "duration_min": _coerce_int(_first_value(item, ("duration", "duration_min", "durationMinutes"))),
+            "departure": _normalise_time(_first_value(item, ("departure", "departureTime", "local_departure"))),
+            "arrival": _normalise_time(_first_value(item, ("arrival", "arrivalTime", "local_arrival"))),
             "stops": stops,
-            # Sky-Scrapper does not return an itinerary deeplink; _deep_link()
-            # builds either a verified airline link or a safer Skyscanner search.
-            "booking_link": None,
+            "booking_link": str(link) if link else None,
         })
-    return out
+    return _dedupe_raw(out)
 
 
-def _query_generic_scraper(
-    origin: str,
-    dest: str,
-    date: str,
-    max_stops: int,
-    headers: dict[str, str],
-) -> list[dict[str, Any]]:
-    """Call the newer sky-scrapper3 /scrape endpoint.
-
-    RapidAPI's Ultra sample calls GET /scrape with a `target` URL. If that
-    target ever returns the same structured JSON as the older flight endpoint,
-    we parse it. If it returns generic scraped page content, we record a clear
-    warning so the email explains why live flight prices are missing.
-    """
-    import requests
-
-    host = _rapidapi_host()
-    target = _sky_scrapper3_target(origin, dest, date)
-    try:
-        resp = requests.get(
-            _search_url(),
-            headers=headers,
-            params={"target": target},
-            timeout=30,
+def _dedupe_raw(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for item in items:
+        key = (
+            item.get("carrier"),
+            item.get("price_eur"),
+            item.get("departure"),
+            item.get("arrival"),
+            item.get("booking_link"),
         )
-        if resp.status_code >= 400:
-            msg = (
-                f"Sky Scrapper 3 HTTP {resp.status_code} via host {host} for "
-                f"{origin}->{dest} {date}: {resp.text[:200]}"
-            )
-            print(f"[flights] {msg}")
-            _LAST_ERRORS.append(msg)
-            return []
-        payload = resp.json()
-    except (requests.RequestException, ValueError) as e:
-        msg = f"Sky Scrapper 3 /scrape call failed ({origin}->{dest} {date}): {type(e).__name__}: {e}"
-        print(f"[flights] {msg}")
-        _LAST_ERRORS.append(msg)
-        return []
-
-    itineraries = (payload.get("data") or {}).get("itineraries", [])
-    if not itineraries:
-        msg = (
-            "Sky Scrapper 3 responded, but did not return structured flight itineraries. "
-            "This Ultra product uses /scrape target URLs; configure a structured flights "
-            "API host/path if you need parsed prices."
-        )
-        print(f"[flights] {msg}")
-        _LAST_ERRORS.append(msg)
-        return []
-
-    out = []
-    for item in itineraries:
-        legs = item.get("legs") or [{}]
-        leg = legs[0]
-        stops = leg.get("stopCount", 0)
-        if stops > max_stops:
-            continue
-        marketing = (leg.get("carriers") or {}).get("marketing") or [{}]
-        carrier = marketing[0].get("name") if marketing else None
-        dep = leg.get("departure") or ""
-        arr = leg.get("arrival") or ""
-        out.append({
-            "carrier": carrier or "Unknown",
-            "price_eur": (item.get("price") or {}).get("raw"),
-            "duration_min": leg.get("durationInMinutes"),
-            "departure": dep[11:16] if len(dep) >= 16 else dep,
-            "arrival": arr[11:16] if len(arr) >= 16 else arr,
-            "stops": stops,
-            "booking_link": target,
-        })
-    return out
+        current = deduped.get(key)
+        if current is None or (item.get("duration_min") or 1e9) < (current.get("duration_min") or 1e9):
+            deduped[key] = item
+    return list(deduped.values())
 
 
 def _fetch_live(config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -350,7 +384,7 @@ def _fetch_live(config: dict[str, Any]) -> list[dict[str, Any]]:
         date_iso = (base_date + dt.timedelta(days=offset)).isoformat()
         batch: list[dict[str, Any]] = []
         for dest in dests:
-            for raw in _query_skyscanner(origin, dest, date_iso, max_stops):
+            for raw in _query_kiwi_price_map(origin, dest, date_iso, max_stops):
                 batch.append(_normalise(raw, origin, dest, date_iso, offset, link_adults))
         if batch:
             return batch
@@ -374,12 +408,19 @@ def fetch_flights(config: dict[str, Any], dry_run: bool = False) -> list[dict[st
     if dry_run:
         return _mock_data(config)
     if not _rapidapi_key():
-        print("[flights] RAPIDAPI_KEY/RAPIDAPI_SKY_KEY not set — returning empty.")
+        print("[flights] RAPIDAPI_KEY/RAPIDAPI_KIWI_KEY not set — returning empty.")
         return []
     return _fetch_live(config)
 
 
 if __name__ == "__main__":
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except ImportError:
+        pass
+
     parser = argparse.ArgumentParser(description="Fetch flight options")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()

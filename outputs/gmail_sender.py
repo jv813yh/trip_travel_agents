@@ -115,6 +115,8 @@ def _transport_link_label(option: dict[str, Any]) -> str:
     link = option.get("booking_link") or ""
     if option.get("type") == "flight" and "skyscanner." in link:
         return "Search on Skyscanner →"
+    if option.get("type") == "flight" and "kiwi.com" in link:
+        return "Search on Kiwi →"
     if option.get("type") == "flixbus":
         return "Book on FlixBus →"
     return "Book →"
