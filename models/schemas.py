@@ -51,6 +51,7 @@ class PriceAlert(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    alert_type: Literal["price_drop", "under_budget", "new_under_budget"] = "price_drop"
     property: str
     hotel_id: str
     prev_price: Optional[float] = None
