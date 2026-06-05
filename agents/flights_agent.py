@@ -104,10 +104,10 @@ def _trip_id(origin: str, dest: str, date: str, carrier: str) -> str:
     return f"{origin}-{dest}-{date.replace('-', '')}-{code}"
 
 
-def _kiwi_search_link(origin: str, dest: str, date: str, adults: int) -> str:
+def _kiwi_search_link(origin_slug: str, dest_slug: str, date: str, adults: int) -> str:
     """Build a Kiwi.com search URL with route/date/passengers pre-filled."""
     q = _u.urlencode({"adults": adults})
-    return f"https://www.kiwi.com/en/search/results/{origin}/{dest}/{date}/no-return?{q}"
+    return f"https://www.kiwi.com/en/search/results/{origin_slug}/{dest_slug}/{date}/no-return?{q}"
 
 
 def _headers() -> dict[str, str] | None:
@@ -179,11 +179,16 @@ def _deep_link(
     """Build the safest booking/search link with date / pax pre-filled."""
     if fallback:
         return fallback
-    return _kiwi_search_link(origin, dest, date, adults)
+    origin_slug = _resolve_kiwi_place_slug(origin) or origin.lower()
+    dest_slug = _resolve_kiwi_place_slug(dest) or dest.lower()
+    return _kiwi_search_link(origin_slug, dest_slug, date, adults)
 
 
 def _normalise(raw: dict[str, Any], origin: str, dest: str, date: str, offset: int, adults: int) -> dict[str, Any]:
     carrier = raw.get("carrier", "Unknown")
+    origin_slug = raw.get("origin_slug") or _resolve_kiwi_place_slug(origin) or origin.lower()
+    dest_slug = raw.get("destination_slug") or _resolve_kiwi_place_slug(dest) or dest.lower()
+    booking_link = raw.get("booking_link") or _kiwi_search_link(origin_slug, dest_slug, date, adults)
     return {
         "trip_id": _trip_id(origin, dest, date, carrier),
         "type": "flight",
@@ -192,10 +197,8 @@ def _normalise(raw: dict[str, Any], origin: str, dest: str, date: str, offset: i
         "duration_min": raw.get("duration_min"),
         "departure": raw.get("departure"),
         "arrival": raw.get("arrival"),
-        "stops": raw.get("stops", 0),
-        "booking_link": _deep_link(
-            carrier, origin, dest, date, adults, raw.get("stops", 0), raw.get("booking_link")
-        ),
+        "stops": raw.get("stops"),
+        "booking_link": booking_link,
         "date": date,
         "date_offset_days": offset,
     }
@@ -335,13 +338,14 @@ def _query_kiwi_price_map(origin: str, dest: str, date: str, max_stops: int) -> 
         price = _extract_price(item)
         if price is None or not _matches_destination(item, dest):
             continue
-        stops = _coerce_int(_first_value(item, ("stops", "stopCount", "numberOfStops"))) or 0
-        if stops > max_stops:
+        stops = _coerce_int(_first_value(item, ("stops", "stopCount", "numberOfStops")))
+        if stops is not None and stops > max_stops:
             continue
         carrier = _first_value(item, ("airline", "airlines", "carrier", "carrierName", "company"))
         if isinstance(carrier, list):
             carrier = ", ".join(str(c) for c in carrier if c)
         link = _first_value(item, ("deep_link", "deepLink", "booking_link", "bookingLink", "url", "link"))
+        destination = item.get("destination") if isinstance(item.get("destination"), dict) else {}
         out.append({
             "carrier": str(carrier) if carrier else "Kiwi.com",
             "price_eur": price,
@@ -350,6 +354,8 @@ def _query_kiwi_price_map(origin: str, dest: str, date: str, max_stops: int) -> 
             "arrival": _normalise_time(_first_value(item, ("arrival", "arrivalTime", "local_arrival"))),
             "stops": stops,
             "booking_link": str(link) if link else None,
+            "origin_slug": source,
+            "destination_slug": destination.get("slug"),
         })
     return _dedupe_raw(out)
 

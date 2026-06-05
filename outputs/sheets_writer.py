@@ -567,7 +567,7 @@ class SheetsWriter:
         now = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
         rows = [
             [
-                now, "price_drop", a["property"], a["prev_price"], a["new_price"],
+                now, a.get("alert_type", "price_drop"), a["property"], a["prev_price"], a["new_price"],
                 a["change_pct"] / 100 if a.get("change_pct") is not None else None,
                 notified_via,
             ]

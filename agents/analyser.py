@@ -76,7 +76,7 @@ OUTPUT_SCHEMA_HINT = {
                 "duration_min": 0,
                 "departure": "str",
                 "arrival": "str",
-                "stops": 0,
+                "stops": None,
                 "booking_link": "str",
                 "total_group_cost_eur": 0,
                 "date": "YYYY-MM-DD",

@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 from typing import Any
+from urllib.parse import urlparse
 
 
 SYSTEM_PROMPT = """\
@@ -122,6 +123,10 @@ def _critique_deterministic(
             issues.append(f"transport carrier '{opt.get('carrier')}' not in raw")
         if not opt.get("booking_link"):
             issues.append(f"transport option '{opt.get('carrier')}' has no booking_link")
+        elif _is_bad_kiwi_link(opt.get("booking_link")):
+            issues.append(
+                f"transport option '{opt.get('carrier')}' has a Kiwi link that uses IATA codes instead of Kiwi slugs"
+            )
 
     return {
         "valid": not issues,
@@ -133,3 +138,15 @@ def _critique_deterministic(
             else None
         ),
     }
+
+
+def _is_bad_kiwi_link(link: str | None) -> bool:
+    if not link or "kiwi.com" not in link:
+        return False
+    parts = [p for p in urlparse(link).path.split("/") if p]
+    try:
+        idx = parts.index("results")
+    except ValueError:
+        return False
+    route_parts = parts[idx + 1 : idx + 3]
+    return any(part.isupper() and len(part) == 3 for part in route_parts)

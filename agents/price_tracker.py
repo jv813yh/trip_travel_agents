@@ -46,7 +46,7 @@ def check_price_alerts(
             # already under budget is still worth alerting on.
             if config["alerts"].get("budget_breach_alert") and price_today < budget:
                 prop["alert_triggered"] = True
-                alerts.append(_alert(prop, hid, None, price_today, None))
+                alerts.append(_alert(prop, hid, None, price_today, None, "new_under_budget"))
             continue
 
         yesterday_price = float(hist.iloc[-1]["price_eur"])
@@ -69,7 +69,14 @@ def check_price_alerts(
         if change_vs_yesterday <= -threshold or budget_breach:
             prop["alert_triggered"] = True
             alerts.append(
-                _alert(prop, hid, yesterday_price, price_today, change_vs_yesterday)
+                _alert(
+                    prop,
+                    hid,
+                    yesterday_price,
+                    price_today,
+                    change_vs_yesterday,
+                    "price_drop" if change_vs_yesterday <= -threshold else "under_budget",
+                )
             )
 
     return alerts
@@ -81,8 +88,10 @@ def _alert(
     prev_price: float | None,
     new_price: float,
     change_pct: float | None,
+    alert_type: str,
 ) -> dict[str, Any]:
     return {
+        "alert_type": alert_type,
         "property": prop.get("name"),
         "hotel_id": hid,
         "prev_price": prev_price,

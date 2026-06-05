@@ -20,7 +20,6 @@ accommodation:
   sources:
     - booking_com     # Apify voyager/booking-scraper
     - airbnb          # Apify tri_angle/airbnb-scraper
-    - skyscanner      # Sky-Scrapper hotels via RapidAPI, aggregates hotel providers
 
 transport:
   budget_flight_eur: 60               # per person one-way

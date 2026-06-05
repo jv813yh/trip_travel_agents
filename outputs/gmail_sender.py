@@ -202,6 +202,8 @@ def _transport_card(option: dict[str, Any], title: str, recommended: bool = Fals
     )
     price = option.get("price_eur_per_person")
     total = option.get("total_group_cost_eur")
+    if not option.get("departure") or not option.get("arrival"):
+        option = {**option, "departure": "schedule", "arrival": "unknown"}
     return (
         "<div style='border:1px solid #dde3ea;border-radius:6px;padding:10px 12px;"
         "margin:8px 0;background:#fff'>"
@@ -375,13 +377,22 @@ def build_html(
     # 3. Alerts
     alerts = acc.get("alerts", [])
     if alerts:
-        parts.append("<h2>🔔 Price alerts</h2><ul>")
-        for a in alerts:
+        real_alerts = [a for a in alerts if a.get("alert_type") != "new_under_budget"]
+        new_matches = [a for a in alerts if a.get("alert_type") == "new_under_budget"]
+        if real_alerts:
+            parts.append("<h2>🔔 Price alerts</h2><ul>")
+        for a in real_alerts:
             chg = f"{a['change_pct']:+.1f}%" if a.get("change_pct") is not None else "new"
             parts.append(
                 f"<li>{a['property']}: €{a.get('prev_price')}→€{a['new_price']} ({chg})</li>"
             )
-        parts.append("</ul>")
+        if real_alerts:
+            parts.append("</ul>")
+        if new_matches:
+            parts.append("<h2>New Budget Matches</h2><ul>")
+            for a in new_matches:
+                parts.append(f"<li>{a['property']}: €{a['new_price']}/person/night</li>")
+            parts.append("</ul>")
 
     # 4. Trend chart
     chart = _trend_chart_b64(history_df, picks)

@@ -78,7 +78,7 @@ class TransportOption(BaseModel):
     duration_min: Optional[int] = Field(default=None, ge=0)
     departure: Optional[str] = None
     arrival: Optional[str] = None
-    stops: int = Field(default=0, ge=0)
+    stops: Optional[int] = Field(default=None, ge=0)
     booking_link: Optional[str] = None
     total_group_cost_eur: Optional[float] = Field(default=None, ge=0)
     date: Optional[str] = None                   # ISO date this option actually covers

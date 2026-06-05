@@ -71,9 +71,7 @@ The configured Kiwi endpoint is `price-map`, so flight prices are indicative map
 departure time, arrival time, duration, and booking links are included only when Kiwi returns those
 fields; otherwise the email shows the price and a Kiwi search link.
 
-Accommodation does not use Kiwi. Booking.com and Airbnb use Apify. The optional `skyscanner`
-accommodation source only works with a structured hotels API, not the generic Sky Scrapper 3
-`/scrape` product.
+Accommodation does not use Kiwi. Booking.com and Airbnb use Apify.
 
 > Personal, non-commercial use only. Scraping Booking.com / Airbnb may violate their ToS — this
 > project uses Apify actors; review the notes in CLAUDE.md.
