@@ -208,11 +208,6 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
-def _formula_escape(value: str) -> str:
-    """Escape a value for use inside a Google Sheets formula string."""
-    return value.replace('"', '""')
-
-
 def _extract_hyperlink_url(value: str) -> str:
     """Return the URL from a HYPERLINK formula, or the original string."""
     match = re.match(r'^=HYPERLINK\("((?:[^"]|"")*)"', value.strip(), flags=re.IGNORECASE)
@@ -222,14 +217,13 @@ def _extract_hyperlink_url(value: str) -> str:
 
 
 def _sheet_hyperlink(url: Any, label: Any | None = None) -> str | None:
-    """Return an explicit HYPERLINK formula so click target equals visible URL."""
+    """Return plain URL text for Sheets cells; hyperlink metadata is applied separately."""
     if url is None:
         return None
     url_text = _extract_hyperlink_url(str(url).strip())
     if not url_text:
         return None
-    label_text = str(label).strip() if label is not None and str(label).strip() else url_text
-    return f'=HYPERLINK("{_formula_escape(url_text)}","{_formula_escape(label_text)}")'
+    return url_text
 
 
 def _price_trend(prices: list[float]) -> str:
@@ -618,11 +612,58 @@ class SheetsWriter:
     # Writes (append rows; formatting persists because we set it on the column)
     # ------------------------------------------------------------------
 
-    def _append(self, worksheet: str, rows: list[list[Any]]) -> None:
+    def _append(self, worksheet: str, rows: list[list[Any]]) -> int | None:
         if not self.enabled or not rows:
+            return None
+        ws = self._spreadsheet.worksheet(worksheet)
+        start_row = len(ws.get_all_values()) + 1
+        ws.append_rows(_json_safe(rows), value_input_option="USER_ENTERED")
+        return start_row
+
+    def _apply_hyperlinks(
+        self,
+        worksheet: str,
+        start_row: int | None,
+        col_index: int,
+        urls: list[Any],
+    ) -> None:
+        """Apply clickable link metadata to plain URL cells.
+
+        `start_row` is 1-based. `col_index` is 0-based.
+        """
+        if not self.enabled or start_row is None or not urls:
             return
         ws = self._spreadsheet.worksheet(worksheet)
-        ws.append_rows(_json_safe(rows), value_input_option="USER_ENTERED")
+        rows = []
+        for url in urls:
+            url_text = _sheet_hyperlink(url)
+            if url_text:
+                rows.append({
+                    "values": [{
+                        "userEnteredFormat": {
+                            "textFormat": {
+                                "link": {"uri": url_text},
+                                "foregroundColor": {"red": 0.13, "green": 0.39, "blue": 0.76},
+                                "underline": True,
+                            }
+                        }
+                    }]
+                })
+            else:
+                rows.append({"values": [{}]})
+        self._batch_update([{
+            "updateCells": {
+                "range": {
+                    "sheetId": ws.id,
+                    "startRowIndex": start_row - 1,
+                    "endRowIndex": start_row - 1 + len(urls),
+                    "startColumnIndex": col_index,
+                    "endColumnIndex": col_index + 1,
+                },
+                "rows": rows,
+                "fields": "userEnteredFormat.textFormat",
+            }
+        }])
 
     def write_accommodation(self, run_date: str, options: list[dict[str, Any]]) -> None:
         group_size = max(1, int(self.config["trip"]["group_size"]))
@@ -637,7 +678,8 @@ class SheetsWriter:
             ]
             for o in options
         ]
-        self._append("accommodation_raw", rows)
+        start_row = self._append("accommodation_raw", rows)
+        self._apply_hyperlinks("accommodation_raw", start_row, 10, [o.get("booking_link") for o in options])
 
     def write_transport(self, run_date: str, options: list[dict[str, Any]]) -> None:
         rows = [
@@ -648,7 +690,8 @@ class SheetsWriter:
             ]
             for o in options
         ]
-        self._append("transport_raw", rows)
+        start_row = self._append("transport_raw", rows)
+        self._apply_hyperlinks("transport_raw", start_row, 9, [o.get("booking_link") for o in options])
 
     def write_daily_top2(self, run_date: str, analysis: dict[str, Any]) -> None:
         group_size = max(1, int(self.config["trip"]["group_size"]))
@@ -671,7 +714,9 @@ class SheetsWriter:
                     if pick.get("total_group_cost_eur") is not None else None,
                 ]
             )
-        self._append("daily_top2", rows)
+        start_row = self._append("daily_top2", rows)
+        links = [pick.get("booking_link") for pick in analysis["accommodation"]["top_picks"]]
+        self._apply_hyperlinks("daily_top2", start_row, 9, links)
 
     def write_alerts(self, alerts: list[dict[str, Any]], notified_via: str = "email") -> None:
         now = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -701,6 +746,7 @@ class SheetsWriter:
             value_input_option="USER_ENTERED",
         )
         self._format_worksheet(ws, COLUMNS["accommodation_stats"])
+        self._apply_hyperlinks("accommodation_stats", 2, 20, [row[20] for row in rows])
         self.refresh_accommodation_price_chart(acc_df, top_df)
         print(f"[sheets] refreshed accommodation_stats ({len(rows)} rows)")
 
