@@ -155,10 +155,13 @@ The workbook contains:
 - `transport_raw`
 - `daily_top2`
 - `accommodation_stats`
+- `accommodation_price_chart`
 - `alerts_log`
 
 `accommodation_stats` is rebuilt from raw accommodation history and top-pick history after each
-successful live run.
+successful live run. `accommodation_price_chart` is rebuilt from `accommodation_raw` and contains a
+wide chart-ready table plus an embedded Google Sheets line chart when at least one hotel has two or
+more valid price points.
 
 ## Secrets
 

@@ -23,6 +23,7 @@ import base64
 import datetime as dt
 import json
 import math
+import numbers
 import os
 from typing import Any
 
@@ -104,6 +105,14 @@ COLUMNS = {
         ("price_history", "text", 360),
         ("link", "link", 220),
     ],
+    "accommodation_price_chart": [
+        ("date", "date", 95),
+        ("hotel_1", "eur", 145),
+        ("hotel_2", "eur", 145),
+        ("hotel_3", "eur", 145),
+        ("hotel_4", "eur", 145),
+        ("hotel_5", "eur", 145),
+    ],
     "alerts_log": [
         ("timestamp", "datetime", 140),
         ("alert_type", "text", 110),
@@ -182,8 +191,11 @@ def _json_safe(value: Any) -> Any:
             return None
     except (TypeError, ValueError):
         pass
-    if isinstance(value, float):
-        return value if math.isfinite(value) else None
+    if isinstance(value, numbers.Real) and not isinstance(value, bool):
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            return None
+        return int(numeric) if numeric.is_integer() else numeric
     if isinstance(value, (dt.date, dt.datetime)):
         return value.isoformat()
     if isinstance(value, list):
@@ -308,6 +320,56 @@ def _build_accommodation_stats(acc_df: pd.DataFrame, top_df: pd.DataFrame) -> li
 
     rows.sort(key=lambda r: (-(r[6] or 0), str(r[2] or "")))
     return rows
+
+
+def _build_accommodation_chart_table(
+    acc_df: pd.DataFrame,
+    top_df: pd.DataFrame,
+    max_series: int = 5,
+) -> tuple[list[str], list[list[Any]]]:
+    """Build a wide date x hotel price table for Google Sheets line charts."""
+    if acc_df is None or acc_df.empty:
+        return ["date"], []
+
+    acc = _with_price_aliases(acc_df)
+    if "hotel_id" not in acc or "date" not in acc or "price_eur" not in acc:
+        return ["date"], []
+    acc = acc.copy()
+    acc["date"] = acc["date"].astype(str)
+    acc["price_eur"] = pd.to_numeric(acc["price_eur"], errors="coerce")
+    acc = acc.dropna(subset=["hotel_id", "date", "price_eur"])
+    if acc.empty:
+        return ["date"], []
+
+    stats = _build_accommodation_stats(acc, top_df)
+    ordered_ids = [str(row[0]) for row in stats if row[5] >= 2 and row[10] is not None]
+    if not ordered_ids:
+        grouped = acc.groupby("hotel_id")["price_eur"].count()
+        ordered_ids = [str(hid) for hid, count in grouped.sort_values(ascending=False).items() if count >= 2]
+    selected_ids = ordered_ids[:max_series]
+    if not selected_ids:
+        return ["date"], []
+
+    latest_names = (
+        acc.sort_values("date")
+        .groupby("hotel_id", dropna=True)["name"]
+        .last()
+        .to_dict()
+    )
+    headers = ["date"] + [
+        str(latest_names.get(hid) or hid)[:60]
+        for hid in selected_ids
+    ]
+
+    pivot = (
+        acc[acc["hotel_id"].astype(str).isin(selected_ids)]
+        .pivot_table(index="date", columns="hotel_id", values="price_eur", aggfunc="last")
+        .sort_index()
+    )
+    rows = []
+    for date, values in pivot.iterrows():
+        rows.append([date] + [values.get(hid) for hid in selected_ids])
+    return headers, rows
 
 
 class SheetsWriter:
@@ -614,7 +676,95 @@ class SheetsWriter:
             value_input_option="USER_ENTERED",
         )
         self._format_worksheet(ws, COLUMNS["accommodation_stats"])
+        self.refresh_accommodation_price_chart(acc_df, top_df)
         print(f"[sheets] refreshed accommodation_stats ({len(rows)} rows)")
+
+    def refresh_accommodation_price_chart(
+        self,
+        acc_df: pd.DataFrame | None = None,
+        top_df: pd.DataFrame | None = None,
+    ) -> None:
+        """Refresh chart-ready accommodation price data and embedded chart."""
+        if not self.enabled:
+            return
+        acc_df = self._read_worksheet("accommodation_raw") if acc_df is None else acc_df
+        top_df = self._read_worksheet("daily_top2") if top_df is None else top_df
+        headers, rows = _build_accommodation_chart_table(acc_df, top_df)
+        ws = self._spreadsheet.worksheet("accommodation_price_chart")
+        ws.clear()
+        ws.update(
+            range_name="A1",
+            values=_json_safe([headers] + rows),
+            value_input_option="USER_ENTERED",
+        )
+        self._format_worksheet(ws, COLUMNS["accommodation_price_chart"])
+        self._replace_accommodation_price_chart(ws, len(rows) + 1, len(headers))
+        print(f"[sheets] refreshed accommodation_price_chart ({len(rows)} rows)")
+
+    def _replace_accommodation_price_chart(self, ws: Any, row_count: int, col_count: int) -> None:
+        """Replace embedded charts on the accommodation chart sheet."""
+        metadata = self._spreadsheet.fetch_sheet_metadata()
+        sheet_meta = next(
+            (s for s in metadata.get("sheets", []) if s.get("properties", {}).get("sheetId") == ws.id),
+            {},
+        )
+        requests: list[dict[str, Any]] = [
+            {"deleteEmbeddedObject": {"objectId": chart["chartId"]}}
+            for chart in sheet_meta.get("charts", [])
+            if "chartId" in chart
+        ]
+        if row_count >= 3 and col_count >= 2:
+            requests.append({
+                "addChart": {
+                    "chart": {
+                        "spec": {
+                            "title": "Accommodation price history",
+                            "basicChart": {
+                                "chartType": "LINE",
+                                "legendPosition": "RIGHT_LEGEND",
+                                "axis": [
+                                    {"position": "BOTTOM_AXIS", "title": "Date"},
+                                    {"position": "LEFT_AXIS", "title": "EUR / person / night"},
+                                ],
+                                "domains": [{
+                                    "domain": {"sourceRange": {"sources": [{
+                                        "sheetId": ws.id,
+                                        "startRowIndex": 0,
+                                        "endRowIndex": row_count,
+                                        "startColumnIndex": 0,
+                                        "endColumnIndex": 1,
+                                    }]}}
+                                }],
+                                "series": [
+                                    {"series": {"sourceRange": {"sources": [{
+                                        "sheetId": ws.id,
+                                        "startRowIndex": 0,
+                                        "endRowIndex": row_count,
+                                        "startColumnIndex": idx,
+                                        "endColumnIndex": idx + 1,
+                                    }]}}}
+                                    for idx in range(1, col_count)
+                                ],
+                            },
+                        },
+                        "position": {
+                            "overlayPosition": {
+                                "anchorCell": {
+                                    "sheetId": ws.id,
+                                    "rowIndex": 0,
+                                    "columnIndex": max(col_count + 1, 7),
+                                },
+                                "offsetXPixels": 20,
+                                "offsetYPixels": 10,
+                                "widthPixels": 760,
+                                "heightPixels": 380,
+                            }
+                        },
+                    }
+                }
+            })
+        if requests:
+            self._batch_update(requests)
 
     # ------------------------------------------------------------------
     # Reads

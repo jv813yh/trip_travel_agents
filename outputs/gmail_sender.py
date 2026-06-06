@@ -43,7 +43,10 @@ def _trend_chart_b64(history_df: pd.DataFrame, top_picks: list[dict[str, Any]]) 
         hist = history_df[history_df["hotel_id"] == pick["hotel_id"]].copy()
         if hist.empty:
             continue
-        hist = hist.sort_values("date").tail(7)
+        hist["price_eur"] = pd.to_numeric(hist["price_eur"], errors="coerce")
+        hist = hist.dropna(subset=["price_eur"]).sort_values("date").tail(7)
+        if len(hist) < 2:
+            continue
         ax.plot(hist["date"], hist["price_eur"], marker="o", label=pick["name"][:24])
         plotted = True
     if not plotted:
@@ -82,7 +85,7 @@ def _transport_trend_chart_b64(history_df: pd.DataFrame, options: list[dict[str,
             continue
         hist["price_eur_pp"] = pd.to_numeric(hist["price_eur_pp"], errors="coerce")
         hist = hist.dropna(subset=["price_eur_pp"]).sort_values("date").tail(14)
-        if hist.empty:
+        if len(hist) < 2:
             continue
         label = f"{option.get('carrier') or option.get('type')} ({option.get('type')})"
         ax.plot(hist["date"].astype(str), hist["price_eur_pp"], marker="o", label=label[:24])
@@ -428,6 +431,12 @@ def build_html(
     if chart:
         parts.append("<h2>📈 Trend</h2>")
         parts.append(f"<img src='data:image/png;base64,{chart}' alt='7-day price trend'/>")
+
+    if not chart and picks:
+        parts.append(
+            "<p style='color:#777;font-size:12px'>Accommodation trend will appear after "
+            "at least two daily price points for a top pick.</p>"
+        )
 
     parts.append("</div>")
     return "".join(parts)
