@@ -22,6 +22,7 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import json
+import math
 import os
 from typing import Any
 
@@ -170,6 +171,28 @@ def _plain_number(value: Any) -> float | None:
     if value is None or pd.isna(value):
         return None
     return float(value)
+
+
+def _json_safe(value: Any) -> Any:
+    """Convert pandas/numpy missing values and non-finite floats to JSON-safe values."""
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, (dt.date, dt.datetime)):
+        return value.isoformat()
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, tuple):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    return value
 
 
 def _price_trend(prices: list[float]) -> str:
@@ -338,7 +361,7 @@ class SheetsWriter:
         if current[: len(expected)] != expected:
             ws.update(
                 range_name="A1",
-                values=[expected],
+                values=_json_safe([expected]),
                 value_input_option="USER_ENTERED",
             )
             self._format_worksheet(ws, cols)
@@ -361,7 +384,7 @@ class SheetsWriter:
                     ws.clear()
                     ws.update(
                         range_name="A1",
-                        values=[[c[0] for c in cols]],
+                        values=_json_safe([[c[0] for c in cols]]),
                         value_input_option="USER_ENTERED",
                     )
             else:
@@ -502,7 +525,7 @@ class SheetsWriter:
                 print(f"[sheets] banding skipped: {exc}")
 
     def _batch_update(self, requests: list[dict[str, Any]]) -> None:
-        self._spreadsheet.batch_update({"requests": requests})
+        self._spreadsheet.batch_update(_json_safe({"requests": requests}))
 
     # ------------------------------------------------------------------
     # Writes (append rows; formatting persists because we set it on the column)
@@ -512,7 +535,7 @@ class SheetsWriter:
         if not self.enabled or not rows:
             return
         ws = self._spreadsheet.worksheet(worksheet)
-        ws.append_rows(rows, value_input_option="USER_ENTERED")
+        ws.append_rows(_json_safe(rows), value_input_option="USER_ENTERED")
 
     def write_accommodation(self, run_date: str, options: list[dict[str, Any]]) -> None:
         group_size = max(1, int(self.config["trip"]["group_size"]))
@@ -587,7 +610,7 @@ class SheetsWriter:
         ws.clear()
         ws.update(
             range_name="A1",
-            values=[headers] + rows,
+            values=_json_safe([headers] + rows),
             value_input_option="USER_ENTERED",
         )
         self._format_worksheet(ws, COLUMNS["accommodation_stats"])
