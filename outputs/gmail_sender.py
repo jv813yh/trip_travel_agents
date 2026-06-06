@@ -304,7 +304,8 @@ def build_html(
         else:
             parts.append(
                 "<div style='border:1px solid #f5c2c7;border-radius:6px;padding:10px 12px;"
-                "margin:8px 0;background:#fff5f5'><b>Best flight:</b> no flight data found today.</div>"
+                "margin:8px 0;background:#fff5f5'><b>Best flight:</b> no confirmed flight "
+                "itinerary from the API today. Manual Kiwi search may still show flights.</div>"
             )
         if best_flixbus:
             parts.append(_transport_card(best_flixbus, "Best FlixBus", rec_type == "flixbus"))

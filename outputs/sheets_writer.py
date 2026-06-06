@@ -25,6 +25,7 @@ import json
 import math
 import numbers
 import os
+import re
 from typing import Any
 
 import pandas as pd
@@ -207,6 +208,30 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
+def _formula_escape(value: str) -> str:
+    """Escape a value for use inside a Google Sheets formula string."""
+    return value.replace('"', '""')
+
+
+def _extract_hyperlink_url(value: str) -> str:
+    """Return the URL from a HYPERLINK formula, or the original string."""
+    match = re.match(r'^=HYPERLINK\("((?:[^"]|"")*)"', value.strip(), flags=re.IGNORECASE)
+    if not match:
+        return value
+    return match.group(1).replace('""', '"')
+
+
+def _sheet_hyperlink(url: Any, label: Any | None = None) -> str | None:
+    """Return an explicit HYPERLINK formula so click target equals visible URL."""
+    if url is None:
+        return None
+    url_text = _extract_hyperlink_url(str(url).strip())
+    if not url_text:
+        return None
+    label_text = str(label).strip() if label is not None and str(label).strip() else url_text
+    return f'=HYPERLINK("{_formula_escape(url_text)}","{_formula_escape(label_text)}")'
+
+
 def _price_trend(prices: list[float]) -> str:
     if len(prices) < 2:
         return "new"
@@ -315,7 +340,7 @@ def _build_accommodation_stats(acc_df: pd.DataFrame, top_df: pd.DataFrame) -> li
             latest_vs_first,
             latest_vs_7d,
             price_history,
-            latest.get("booking_link"),
+            _sheet_hyperlink(latest.get("booking_link")),
         ])
 
     rows.sort(key=lambda r: (-(r[6] or 0), str(r[2] or "")))
@@ -605,7 +630,7 @@ class SheetsWriter:
             [
                 run_date, o["hotel_id"], o["source"], o["name"], o["price_eur"],
                 o["rating"], o["lat"], o["lng"], o["distance_km"],
-                o.get("availability", True), o["booking_link"], o.get("composite_score"),
+                o.get("availability", True), _sheet_hyperlink(o["booking_link"]), o.get("composite_score"),
                 o.get("rooms"), o.get("total_group_cost_eur"),
                 round(o["total_group_cost_eur"] / group_size, 2)
                 if o.get("total_group_cost_eur") is not None else None,
@@ -619,7 +644,7 @@ class SheetsWriter:
             [
                 run_date, o["trip_id"], o["type"], o["carrier"],
                 o["price_eur_per_person"], o["duration_min"], o["departure"],
-                o["arrival"], o["stops"], o["booking_link"],
+                o["arrival"], o["stops"], _sheet_hyperlink(o["booking_link"]),
             ]
             for o in options
         ]
@@ -638,7 +663,7 @@ class SheetsWriter:
                     pick["price_eur_per_night"], pick["composite_score"],
                     vs_y / 100 if vs_y is not None else None,
                     vs_7 / 100 if vs_7 is not None else None,
-                    pick.get("alert_triggered", False), pick["booking_link"],
+                    pick.get("alert_triggered", False), _sheet_hyperlink(pick["booking_link"]),
                     pick.get("hotel_id"),
                     pick.get("rooms"),
                     pick.get("total_group_cost_eur"),
